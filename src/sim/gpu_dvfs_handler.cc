@@ -52,7 +52,7 @@ namespace gem5
 
 //
 //
-// DVFSHandler methods implementation
+// GPU DVFSHandler methods implementation
 //
 
 GPUDVFSHandler::GPUDVFSHandler(const Params &p)

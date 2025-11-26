@@ -77,9 +77,9 @@ def makeGpuFSSystem(args):
     system.cache_line_size = args.cacheline_size
 
     # Create a top-level voltage and clock domain.
-    system.voltage_domain = VoltageDomain(voltage=args.sys_voltage)
+    system.voltage_domain = VoltageDomain(voltage=["1.0V", "0.9V", "0.8V"])
     system.clk_domain = SrcClockDomain(
-        clock=args.sys_clock, voltage_domain=system.voltage_domain
+        clock=["4GHz", "2GHz", "1GHz"], voltage_domain=system.voltage_domain
     )
 
     # Create a CPU voltage and clock domain.
@@ -313,7 +313,7 @@ def makeGpuFSSystem(args):
 
     # Create a seperate clock domain for Ruby
     system.ruby.clk_domain = SrcClockDomain(
-        clock=args.ruby_clock, voltage_domain=system.voltage_domain
+        clock=args.ruby_clock, voltage_domain=VoltageDomain(voltage="1.0V")
     )
 
     # If we are using KVM cpu, enable AVX. AVX is used in some ROCm libraries
