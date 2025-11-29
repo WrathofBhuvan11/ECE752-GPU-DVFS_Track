@@ -77,9 +77,9 @@ def makeGpuFSSystem(args):
     system.cache_line_size = args.cacheline_size
 
     # Create a top-level voltage and clock domain.
-    system.voltage_domain = VoltageDomain(voltage=["1.0V", "0.9V", "0.8V"])
+    system.voltage_domain = VoltageDomain(voltage="1V")
     system.clk_domain = SrcClockDomain(
-        clock=["4GHz", "2GHz", "1GHz"], voltage_domain=system.voltage_domain
+        clock="4GHz", voltage_domain=system.voltage_domain
     )
 
     # Create a CPU voltage and clock domain.
