@@ -40,6 +40,7 @@
 #include <set>
 #include <utility>
 
+#include "cpu/base.hh"
 #include "base/trace.hh"
 #include "debug/DVFS.hh"
 #include "params/DVFSHandler.hh"
@@ -59,7 +60,8 @@ DVFSHandler::DVFSHandler(const Params &p)
     : SimObject(p),
       sysClkDomain(p.sys_clk_domain),
       enableHandler(p.enable),
-      _transLatency(p.transition_latency)
+      _transLatency(p.transition_latency),
+     decisionEvent([this]{ runDecisionLoop(); }, name())
 {
     // Check supplied list of domains for sanity and add them to the
     // domain ID -> domain* hash
@@ -86,6 +88,44 @@ DVFSHandler::DVFSHandler(const Params &p)
         domainIDList.push_back(d->domainID());
     }
     UpdateEvent::dvfsHandler = this;
+    schedule(decisionEvent, curTick() + 1000000000000);
+}
+
+void DVFSHandler::runDecisionLoop()
+{
+    // --- 1. YOUR CUSTOM LOGIC HERE ---
+    // Example: "If it's Tuesday, go faster"
+    // In reality: Check utilization, temperature, etc.
+    
+    DomainID targetDomain = 1; // The ID of your CPU domain
+    PerfLevel currentLevel = findDomain(targetDomain)->perfLevel();
+    PerfLevel desiredLevel = currentLevel;
+    
+    // Trivial Example Logic: Toggle between Level 0 and Level 1
+    if (curTick() >= 9000000000000){
+        if (desiredLevel == 0) {
+            desiredLevel = 2;
+        } else {
+            desiredLevel = 0;
+        }
+    }
+
+    // --- 2. ACTUATE (Use the existing struct) ---
+    // Only schedule the update if we actually want to change something
+    if (desiredLevel != currentLevel) {
+        DPRINTF(DVFS, "CustomGovernor: PC:%d Decided to switch Domain %d to Level %d\n", 
+                targetDomain, desiredLevel);
+
+        perfLevel(targetDomain, desiredLevel);
+    
+    }
+
+    // --- 3. LOOP ---
+    // Reschedule this decision function for 100us later
+    if (curTick() >= 9000000000000)
+        schedule(decisionEvent, curTick() + 1000000000);
+    else 
+        schedule(decisionEvent, curTick() + 1000000000000);
 }
 
 DVFSHandler *DVFSHandler::UpdateEvent::dvfsHandler;
@@ -161,6 +201,9 @@ DVFSHandler::UpdateEvent::updatePerfLevel()
     // level migration
     statistics::dump();
     statistics::reset();
+
+    DPRINTF(DVFS, "DVFS_THEO: Performing scheduled performance level update for "\
+            "domain ID %d -> level %d\n", domainIDToSet, perfLevelToSet);
 
     // Update the performance level in the clock domain
     auto d = dvfsHandler->findDomain(domainIDToSet);

@@ -76,6 +76,7 @@ class DVFSHandler : public SimObject
   public:
     typedef DVFSHandlerParams Params;
     DVFSHandler(const Params &p);
+    
 
     typedef SrcClockDomain::DomainID DomainID;
     typedef SrcClockDomain::PerfLevel PerfLevel;
@@ -182,6 +183,8 @@ class DVFSHandler : public SimObject
 
   private:
     typedef std::map<DomainID, SrcClockDomain*> Domains;
+    EventFunctionWrapper decisionEvent;
+    void runDecisionLoop();
     Domains domains;
 
     /**

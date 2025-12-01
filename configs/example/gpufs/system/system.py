@@ -75,18 +75,36 @@ def makeGpuFSSystem(args):
 
     # Set the cache line size for the entire system.
     system.cache_line_size = args.cacheline_size
+   
+    system.main_voltage_domain = VoltageDomain(voltage="1V")
+    system.sys_clk_domain = SrcClockDomain(
+        clock = '4GHz',
+        voltage_domain = system.main_voltage_domain,
+        domain_id = 0
+    )
 
     # Create a top-level voltage and clock domain.
-    system.voltage_domain = VoltageDomain(voltage="1V")
+    system.voltage_domain = VoltageDomain(voltage=["1V", "0.9V", "0.8V"])
     system.clk_domain = SrcClockDomain(
-        clock="4GHz", voltage_domain=system.voltage_domain
+        clock=["4GHz", "2GHz", "1GHz"], voltage_domain=system.voltage_domain,
+        domain_id = 1
     )
 
     # Create a CPU voltage and clock domain.
     system.cpu_voltage_domain = VoltageDomain()
     system.cpu_clk_domain = SrcClockDomain(
-        clock=args.cpu_clock, voltage_domain=system.cpu_voltage_domain
+        clock=args.cpu_clock, voltage_domain=system.cpu_voltage_domain,
+        domain_id = 2
     )
+
+    inform("THEO: CALLING DVFS HANDLER")
+    system.dvfs_handler = DVFSHandler()
+    system.dvfs_handler.enable = True
+    system.dvfs_handler.sys_clk_domain = system.sys_clk_domain
+    system.dvfs_handler.domains = [system.clk_domain]
+
+
+    inform("THEO:DONE CALLING DVFS HANDLER")
 
     # Setup VGA ROM region
     system.shadow_rom_ranges = [AddrRange(0xC0000, size=Addr("128KiB"))]

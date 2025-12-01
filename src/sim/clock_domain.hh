@@ -70,6 +70,7 @@ class Clocked;
  */
 class ClockDomain : public SimObject
 {
+  friend class DVFSHandler;
   protected:
 
     /**
