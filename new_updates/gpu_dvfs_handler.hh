@@ -16,9 +16,9 @@ namespace gem5
 
 /**
  * GpuDVFSHandler
- * handler for managing GPU Dynamic Voltage and Frequency Scaling (DVFS).
- * this class is "active": it contains its own decision loop that wakes up 
- * periodically to inspect GPU state (Program Counter)
+ * * A specialized handler for managing GPU Dynamic Voltage and Frequency Scaling (DVFS).
+ * Unlike the standard passive DVFSHandler, this class is "active": it contains its own
+ * decision loop that wakes up periodically to inspect GPU state (Program Counter)
  * and make frequency scaling decisions autonomously.
  */
 class GpuDVFSHandler : public SimObject
@@ -34,7 +34,7 @@ class GpuDVFSHandler : public SimObject
     /**
      * startup()
      * Called by gem5 after all objects are created but before simulation starts.
-     * use this to schedule the first iteration of decision loop.
+     * We use this to schedule the first iteration of our decision loop.
      */
     void startup() override;
 

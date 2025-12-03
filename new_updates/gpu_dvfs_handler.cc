@@ -5,6 +5,7 @@
 
 // definition of Shader for the dynamic_cast
 #include "gpu-compute/shader.hh"
+#include "gpu-compute/compute_unit.hh"
 
 namespace gem5
 {
@@ -68,7 +69,7 @@ Addr GpuDVFSHandler::readGpuPC()
     // Traversal: Iterate over cuList
     for (auto *cu : gpuShader->cuList) {
         // Traversal: Iterate over wfList (2D Vector: [SIMD][Slot])
-        // wavefront-wfList is std::vector<std::deque<Wavefront*>>-> changing to deque
+        // wavefront-wfList is std::vector<std::deque<Wavefront*
         for (const auto &simd_waves : cu->wfList) {
             // Traversal: Iterate over specific wavefronts in this SIMD
             for (auto *wave : simd_waves) {
@@ -112,7 +113,6 @@ void GpuDVFSHandler::runDecisionLoop()
     if (current_pc == 0) {
         // Case 1: GPU is IDLE (Booting or Waiting).
         // Do NOT check again for a long time (e.g., 10ms).
-        // This fixes the "stuck" boot issue.
         // inform("GPU_DVFS: GPU Idle. Sleeping for 10ms...");
         nextPollTick = 10000000000; 
         
@@ -133,7 +133,7 @@ void GpuDVFSHandler::runDecisionLoop()
     // ------------------------------------------------------------------
     // define a "block" of execution as 15000 PC increments.
     // Block 0 (PC 0-14999) -> Level 0 (High Perf)
-    // Block 1 (PC 15000-29999) -> Level 1 (Med Perf) ...
+    // Block 1 (PC 15000-29999) -> Level 1 (Med Perf) ... #TODO We will replace this with the PCSTALL
     // ------------------------------------------------------------------
     
     uint64_t block_index = current_pc / 15000;
