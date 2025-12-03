@@ -118,13 +118,17 @@ def makeGpuFSSystem(args):
     )
 
     # -----------------------------------------------------------------------
-    # CRITICAL :Alias the clock domains
+    # CRITICAL FIX: Alias the clock domains
     # -----------------------------------------------------------------------
-    # use __dict__ assignment here to bypass gem5's SimObject parenting 
+    # NOTE: use __dict__ assignment here to bypass gem5's SimObject parenting 
     # checks. Standard assignment (system.a = system.b) fails because a SimObject 
     # cannot be registered as a child under two different names simultaneously.
     system.__dict__['sys_clk_domain'] = system.clk_domain
     system.__dict__['cpu_clk_domain'] = system.clk_domain
+
+    ## CRITICAL ALIASING:
+    #system.sys_clk_domain = system.clk_domain
+    #system.cpu_clk_domain = system.clk_domain
 
     # -----------------------------------------------------------------------
     # 3. DVFS HANDLER SETUP
@@ -505,14 +509,12 @@ def makeGpuFSSystem(args):
 
 
 
-    # -----------------------------------------------------------
-    # SHADER CONNECTION (Attempt to auto-connect at the end) #TODO Is this required?
-    # -----------------------------------------------------------
+     # -----------------------------------------------------------
+     # SHADER CONNECTION
+     # -----------------------------------------------------------
     if enable_gpu_dvfs:
-        if hasattr(system, 'shader'):
-            system.dvfs_handler.shader = system.shader
-        elif hasattr(system, 'gpu') and hasattr(system.gpu, 'shader'):
-             system.dvfs_handler.shader = system.gpu.shader
-    #------------------------------------------------------------
+         # 'shader' is the local variable created earlier by createGPU()
+         system.dvfs_handler.shader = shader
+         
 
     return system
