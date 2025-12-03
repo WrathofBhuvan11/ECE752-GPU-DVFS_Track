@@ -5,7 +5,6 @@
 
 // definition of Shader for the dynamic_cast
 #include "gpu-compute/shader.hh"
-#include "gpu-compute/compute_unit.hh"
 
 namespace gem5
 {
