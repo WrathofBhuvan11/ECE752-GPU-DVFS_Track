@@ -1273,6 +1273,28 @@ Wavefront::nextInstr()
 {
     // Read next instruction from instruction buffer
     GPUDynInstPtr ii = instructionBuffer.front();
+
+  //chenged here-------------------------------------------------------------------------------------------------------
+    auto cu = computeUnit;  // pointer to ComputeUnit
+    
+    // --- INSTRUCTION TYPE DETECTION ---
+    if (ii->isLoad() || ii->isStore()) {
+        cu->instrBalance--;    // memory → decrement
+    } else if (ii->isALU()) {
+        cu->instrBalance++;    // compute → increment
+    }
+    
+    // --- CLAMP RANGE TO [-500, 500] ---
+    if (cu->instrBalance > 500)  cu->instrBalance = 500;
+    if (cu->instrBalance < -500) cu->instrBalance = -500;
+    
+    // --- APPLY DVFS BASED ON SIGN ---
+    if (cu->instrBalance < 0) {
+        cu->shader->adjustFrequency(memoryFreqGHz);
+    } else {
+        cu->shader->adjustFrequency(computeFreqGHz);
+    }
+  //to channging here--------------------------------------------------------------------------------------------------------
     // if the WF has been dispatched in the schedule stage then
     // check the next oldest instruction for readiness
     if (computeUnit->pipeMap.find(ii->seqNum()) !=
