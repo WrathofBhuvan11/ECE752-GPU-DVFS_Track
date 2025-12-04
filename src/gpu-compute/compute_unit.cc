@@ -65,6 +65,8 @@
 namespace gem5
 {
 
+int instrBalance = 0; //for the PCSTALL implementation
+
 ComputeUnit::ComputeUnit(const Params &p) : ClockedObject(p),
     numVectorGlobalMemUnits(p.num_global_mem_pipes),
     numVectorSharedMemUnits(p.num_shared_mem_pipes),
