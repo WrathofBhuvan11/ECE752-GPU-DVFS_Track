@@ -1290,9 +1290,9 @@ Wavefront::nextInstr()
     
     // --- APPLY DVFS BASED ON SIGN ---
     if (cu->instrBalance < 0) {
-        cu->shader->adjustFrequency(memoryFreqGHz);
+        cu->shader->adjustFrequency(1.0);
     } else {
-        cu->shader->adjustFrequency(computeFreqGHz);
+        cu->shader->adjustFrequency(3.0);
     }
   //to channging here--------------------------------------------------------------------------------------------------------
     // if the WF has been dispatched in the schedule stage then
