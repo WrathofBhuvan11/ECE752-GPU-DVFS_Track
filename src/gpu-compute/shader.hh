@@ -205,6 +205,8 @@ class Shader : public ClockedObject
         return shHiddenPrivateBaseVmid;
     }
 
+    void adjustFrequency(double freqGHz); //pcstall implementation
+
     void
     initShHiddenPrivateBase(Addr queueBase, uint32_t offset)
     {
