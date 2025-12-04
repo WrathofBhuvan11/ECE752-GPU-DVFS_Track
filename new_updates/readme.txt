@@ -1,4 +1,4 @@
-Only in ECE752-GPU-DVFS/src/sim: GpuDVFSHandler.py
+Files ECE752-GPU-DVFS/src/sim: GpuDVFSHandler.py
 Files ECE752-GPU-DVFS/src/sim/SConscript
 Files ECE752-GPU-DVFS/src/sim/clock_domain.hh 
 Files ECE752-GPU-DVFS/src/sim/gpu_dvfs_handler.cc 
