@@ -54,12 +54,6 @@
 namespace gem5
 {
 
-void
-Shader::adjustFrequency(double freqGHz)
-{
-    // gem5 DVFS hook:
-    clockDomain->setFrequency(freqGHz);
-}
 
 
 Shader::Shader(const Params &p) : ClockedObject(p),
@@ -164,6 +158,12 @@ Shader::init()
     assert(gpuTc);
 }
 
+void
+Shader::adjustFrequency(double freqGHz)
+{
+    // gem5 DVFS hook:
+    clockDomain.setFrequency(freqGHz);
+}
 Shader::~Shader()
 {
     for (int j = 0; j < n_cu; ++j)

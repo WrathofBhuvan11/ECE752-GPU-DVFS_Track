@@ -124,6 +124,8 @@ class Shader : public ClockedObject
     ThreadContext *gpuTc;
     BaseCPU *cpuPointer;
 
+    void adjustFrequency(double freqGHz); //pcstall implementation
+
     void
     setHwReg(int regIdx, uint32_t val)
     {
@@ -204,8 +206,6 @@ class Shader : public ClockedObject
     {
         return shHiddenPrivateBaseVmid;
     }
-
-    void adjustFrequency(double freqGHz); //pcstall implementation
 
     void
     initShHiddenPrivateBase(Addr queueBase, uint32_t offset)

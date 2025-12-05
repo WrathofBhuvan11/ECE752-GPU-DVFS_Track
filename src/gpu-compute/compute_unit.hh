@@ -198,6 +198,7 @@ class WFBarrier
      * longer considered for this barrier.
      */
     int _maxBarrierCnt;
+    
 };
 
 class ComputeUnit : public ClockedObject
@@ -271,6 +272,8 @@ class ComputeUnit : public ClockedObject
     int coalescerToVrfBusWidth; // Coalescer->VRF data bus width in bytes
     int numCyclesPerStoreTransfer;  // number of cycles per vector store
     int numCyclesPerLoadTransfer;  // number of cycles per vector load
+
+    int instrBalance; //for the PCSTALL implementation
 
     // track presence of dynamic instructions in the Schedule pipeline
     // stage. This is used to check the readiness of the oldest,

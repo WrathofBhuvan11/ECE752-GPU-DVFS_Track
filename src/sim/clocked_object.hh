@@ -101,10 +101,6 @@ class Clocked
         tick += elapsedCycles * clockPeriod();
     }
 
-    /**
-     * The clock domain this clocked object belongs to
-     */
-    ClockDomain &clockDomain;
 
   protected:
 
@@ -149,6 +145,10 @@ class Clocked
 
   public:
 
+    /**
+     * The clock domain this clocked object belongs to
+     */
+    ClockDomain &clockDomain;
     /**
      * Update the tick to the current tick.
      */
