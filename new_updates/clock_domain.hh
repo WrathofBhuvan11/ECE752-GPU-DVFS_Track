@@ -71,6 +71,7 @@ class Clocked;
 class ClockDomain : public SimObject
 {
   // Bhuvi-Grant access to DVFSHandler to allow it to change clock periods
+  friend class GpuDVFSHandler;
   friend class DVFSHandler;
   protected:
 
@@ -86,14 +87,14 @@ class ClockDomain : public SimObject
     VoltageDomain *_voltageDomain;
 
     /**
-     * Pointers to potential derived clock domains so we can propagate
+     * Pointers to potential derived clock domains so propagate
      * changes.
      */
     std::vector<DerivedClockDomain*> children;
 
     /**
      * Pointers to members of this clock domain, so that when the clock
-     * period changes, we can update each member's tick.
+     * period changes, update each member's tick.
      */
     std::vector<Clocked *> members;
 

@@ -1,7 +1,6 @@
 from m5.params import *
 from m5.objects.SimObject import SimObject
 from m5.objects.ClockDomain import SrcClockDomain
-#from m5.objects.Shader import Shader 
 
 class GpuDVFSHandler(SimObject):
     type = 'GpuDVFSHandler'
@@ -22,6 +21,9 @@ class GpuDVFSHandler(SimObject):
                 "100us", "Latency for perf level transition"
     )
     
-    #Pointer to the GPU Shader to read real PCs
-    #shader = Param.Shader(NULL, "Pointer to the GPU Shader object")
+    # Generic SimObject pointer to the GPU
     shader = Param.SimObject(NULL, "Pointer to the GPU Shader object")
+
+    def __init__(self, **kwargs):
+        super(GpuDVFSHandler, self).__init__(**kwargs)
+        print("PYTHON: GpuDVFSHandler instantiated in configuration!")

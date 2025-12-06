@@ -1,4 +1,4 @@
-# Copyright (c) 2021 Advanced Micro Devices, Inc.
+# Copyright (c) 2022 Advanced Micro Devices, Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -40,29 +40,20 @@ from system.amdgpu import *
 from m5.util import panic
 
 
-# Explicitly import new handler if available
-try:
-    from m5.objects import GpuDVFSHandler
-except ImportError:
-    pass
-
 def makeGpuFSSystem(args):
     # Boot options are standard gem5 options plus:
     # - Framebuffer device emulation 0 to reduce driver code paths.
-    # - Blacklist amdgpu as it cannot (currently) load in KVM CPU.
-    # - Blacklist psmouse as amdgpu driver adds proprietary commands that
-    #   cause gem5 to panic.
     boot_options = [
         "earlyprintk=ttyS0",
         "console=ttyS0,9600",
         "lpj=7999923",
         f"root={args.root_partition}",
-        "drm_kms_helper.fbdev_emulation=0",
-        "modprobe.blacklist=amdgpu",
-        "modprobe.blacklist=psmouse",
+        "drm_kms_helper.fbdev_emulation=0"
+        #"modprobe.blacklist=amdgpu",
+        #"modprobe.blacklist=psmouse",
     ]
     cmdline = " ".join(boot_options)
- 
+
     if MemorySize(args.mem_size) < MemorySize("2GiB"):
         panic("Need at least 2GiB of system memory to load amdgpu module")
 
@@ -81,83 +72,45 @@ def makeGpuFSSystem(args):
 
     # Set the cache line size for the entire system.
     system.cache_line_size = args.cacheline_size
-    
-    #=======================================================================
-    # -----------------------------------------------------------------------
-    # 1. VOLTAGE DOMAIN SETUP
-    # -----------------------------------------------------------------------
-    enable_gpu_dvfs = getattr(args, "enable_gpu_dvfs", False)
-    
-    if enable_gpu_dvfs:
-        inform("THEO: GPU DVFS ENABLED - Configuring 3-Level Voltage/Frequency")
-        # 3 Levels: High (1V), Medium (0.9V), Low (0.8V)
-        # Index 0: 1V   (Fastest)
-        # Index 1: 0.9V (Medium)
-        # Index 2: 0.8V (Slowest)
-        system.main_voltage_domain = VoltageDomain(voltage=["1V", "0.9V", "0.8V"])
-        clock_frequencies = ["4GHz", "2GHz", "1GHz"]
-    else:
-        inform("THEO: GPU DVFS DISABLED - Configuring Standard Static Hardware")
-        # Standard: Fixed 1V
-        # Fallback: Standard Single-Level Setup (Safe Default)
-        system.main_voltage_domain = VoltageDomain(voltage=["1V"])
-        clock_frequencies = ["4GHz"]
 
-    # -----------------------------------------------------------------------
-    # 2. CLOCK DOMAIN SETUP 
-    # -----------------------------------------------------------------------
-    # We create ONE source clock domain that supports the frequencies defined above.
-    # We assign it to 'system.clk_domain' which is the gem5 root parameter.
-    # Index 0: 4GHz (Fastest)
-    # Index 1: 2GHz (Medium)
-    # Index 2: 1GHz (Slowest)
+    # Create a top-level voltage and clock domain.
+    system.voltage_domain = VoltageDomain(voltage=args.sys_voltage)
     system.clk_domain = SrcClockDomain(
-        clock=clock_frequencies,
-        voltage_domain=system.main_voltage_domain,
-        domain_id=1
+        clock=args.sys_clock, voltage_domain=system.voltage_domain
     )
 
-    # -----------------------------------------------------------------------
-    # CRITICAL FIX: Alias the clock domains
-    # -----------------------------------------------------------------------
-    # NOTE: use __dict__ assignment here to bypass gem5's SimObject parenting 
-    # checks. Standard assignment (system.a = system.b) fails because a SimObject 
-    # cannot be registered as a child under two different names simultaneously.
-    system.__dict__['sys_clk_domain'] = system.clk_domain
-    system.__dict__['cpu_clk_domain'] = system.clk_domain
+    # Create a CPU voltage and clock domain.
+    system.cpu_voltage_domain = VoltageDomain()
+    system.cpu_clk_domain = SrcClockDomain(
+        clock=args.cpu_clock, voltage_domain=system.cpu_voltage_domain
+    )
 
-    ## CRITICAL ALIASING:
-    #system.sys_clk_domain = system.clk_domain
-    #system.cpu_clk_domain = system.clk_domain
 
-    # -----------------------------------------------------------------------
-    # 3. DVFS HANDLER SETUP
-    # -----------------------------------------------------------------------
-    if enable_gpu_dvfs:
-        system.dvfs_handler = GpuDVFSHandler()
-        system.dvfs_handler.enable = True
+    #///////////////////////////////////////////////////////////////////
+    # --- GPU DVFS DOMAINS ---
+    # Define the 3-level operating points for the PCSTALL implementation
+    # Frequencies: 4GHz (Level 0), 2GHz (Level 1), 1GHz (Level 2)
+    # Voltages: 1V, 0.9V, 0.8V
+    if args.enable_gpu_dvfs:
+        gpu_voltages = ["1V", "0.9V", "0.8V"]
+        gpu_freqs = ["4GHz", "2GHz", "1GHz"]
         
-        # Give handler access to the clock domain it needs to control
-        system.dvfs_handler.sys_clk_domain = system.clk_domain
-        system.dvfs_handler.domains = [system.clk_domain]
-        
-    #=======================================================
+        system.gpu_voltage_domain = VoltageDomain(voltage=gpu_voltages)
+        system.gpu_clk_domain = SrcClockDomain(
+            clock=gpu_freqs,
+            voltage_domain=system.gpu_voltage_domain,
+            domain_id=100  # Handler assumes Domain ID 1
+        )
+    else:
+        # Fallback to standard system clock if DVFS is disabled
+        system.gpu_voltage_domain = VoltageDomain(voltage=args.sys_voltage)
+        system.gpu_clk_domain = SrcClockDomain(
+            clock=args.sys_clock,
+            voltage_domain=system.gpu_voltage_domain,
+            domain_id=100
+        )
 
-
-    #===================================================
-    ## # New block to instantiate the handler
-    ## inform("THEO: CALLING DVFS HANDLER")
-    ## inform("BHUVI: INITIALIZING PC-TRACKING DVFS HANDLER (3-Level Cyclical)")
-    ## system.dvfs_handler = DVFSHandler()
-    ## system.dvfs_handler.enable = True
-    ## system.dvfs_handler.sys_clk_domain = system.sys_clk_domain
-    ## 
-    ## # This line is critical: It tells the handler which domain ID it can modify
-    ## system.dvfs_handler.domains = [system.clk_domain]
-    ## 
-    ## inform("THEO: DVFS HANDLER CONFIGURED")
-
-    #===================================================
+    #///////////////////////////////////////////////////////////////////
 
     # Setup VGA ROM region
     system.shadow_rom_ranges = [AddrRange(0xC0000, size=Addr("128KiB"))]
@@ -172,6 +125,21 @@ def makeGpuFSSystem(args):
 
     # Create AMDGPU and attach to southbridge
     shader = createGPU(system, args)
+    
+    # --- ASSIGN GPU DOMAIN & HANDLER ---
+    # Explicitly set the GPU (Shader) to use our custom DVFS domain
+    shader.clk_domain = system.gpu_clk_domain
+
+    if args.enable_gpu_dvfs:
+        print("INFO: Enabling GpuDVFSHandler with 3-level PCSTALL logic.")
+        system.gpu_dvfs_handler = GpuDVFSHandler(
+            domains=[system.gpu_clk_domain], # The domain to control
+            sys_clk_domain=system.clk_domain, # Reference system clock
+            enable=True,
+            transition_latency="100us", # Latency for switching freq
+            shader=shader # Pointer to GPU for PC sampling
+        )
+    # ---------------------------------------------
     connectGPU(system, args)
 
     # The shader core will be whatever is after the CPU cores are accounted for
@@ -384,10 +352,10 @@ def makeGpuFSSystem(args):
 
     # Create a seperate clock domain for Ruby
     system.ruby.clk_domain = SrcClockDomain(
-        clock=args.ruby_clock, voltage_domain=VoltageDomain(voltage="1.0V")
+        clock=args.ruby_clock, voltage_domain=system.voltage_domain
     )
 
-    # If we are using KVM cpu, enable AVX. AVX is used in some ROCm libraries
+    # If using KVM cpu, enable AVX. AVX is used in some ROCm libraries
     # such as rocBLAS which is used in higher level libraries like PyTorch.
     use_avx = False
     if ObjectList.is_kvm_cpu(TestCPUClass) and not args.disable_avx:
@@ -424,7 +392,7 @@ def makeGpuFSSystem(args):
     avx_cpu_features = [0x00020F51, 0x00000805, 0xEFDBFBFF, 0x1C803209]
 
     for i, cpu in enumerate(system.cpu):
-        # Break once we reach the shader "CPU"
+        # Break once reach the shader "CPU"
         if i == args.num_cpus:
             break
 
@@ -470,7 +438,7 @@ def makeGpuFSSystem(args):
     )
     gpu_port_idx = gpu_port_idx - args.num_cp * 2
 
-    # Connect token ports. For this we need to search through the list of all
+    # Connect token ports. For this need to search through the list of all
     # sequencers, since the TCP coalescers will not necessarily be first. Only
     # TCP coalescers use a token port for back pressure.
     token_port_idx = 0
@@ -506,15 +474,5 @@ def makeGpuFSSystem(args):
             gpu_port_idx
         ].in_ports
     gpu_port_idx = gpu_port_idx + 1
-
-
-
-     # -----------------------------------------------------------
-     # SHADER CONNECTION
-     # -----------------------------------------------------------
-    if enable_gpu_dvfs:
-         # 'shader' is the local variable created earlier by createGPU()
-         system.dvfs_handler.shader = shader
-         
-
+ 
     return system
