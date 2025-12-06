@@ -121,6 +121,9 @@ def runMI300GPUFS(
     GPUTLBOptions.tlb_options(parser)
     addDemoOptions(parser)
 
+    parser.add_argument("--enable-gpu-dvfs", action="store_true", default=False, \
+        help="Enable the specialized Toy GPU DVFS Handler (Cyclical 3-Level)")
+
     # Parse now so we can override options
     args = parser.parse_args()
     demo_runscript = ""

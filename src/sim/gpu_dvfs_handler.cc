@@ -1,260 +1,182 @@
-/*
- * Copyright (c) 2013-2014 ARM Limited
- * All rights reserved
- *
- * The license below extends only to copyright in the software and shall
- * not be construed as granting a license to any other intellectual
- * property including but not limited to intellectual property relating
- * to a hardware implementation of the functionality of the software
- * licensed hereunder.  You may use the software subject to the license
- * terms below provided that you ensure that this notice is replicated
- * unmodified and in its entirety in all distributions of the software,
- * modified or unmodified, in source code or in binary form.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are
- * met: redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer;
- * redistributions in binary form must reproduce the above copyright
- * notice, this list of conditions and the following disclaimer in the
- * documentation and/or other materials provided with the distribution;
- * neither the name of the copyright holders nor the names of its
- * contributors may be used to endorse or promote products derived from
- * this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 #include "sim/gpu_dvfs_handler.hh"
-
-#include <set>
-#include <utility>
-
 #include "base/trace.hh"
 #include "debug/DVFS.hh"
-#include "params/DVFSHandler.hh"
-#include "sim/serialize.hh"
 #include "sim/stat_control.hh"
-#include "sim/voltage_domain.hh"
+
+// definition of Shader for the dynamic_cast
+#include "gpu-compute/shader.hh"
+#include "gpu-compute/compute_unit.hh"
 
 namespace gem5
 {
 
-//
-//
-// GPU DVFSHandler methods implementation
-//
-
-GPUDVFSHandler::GPUDVFSHandler(const Params &p)
+// ----------------------------------------------------------------------
+// Constructor
+// ----------------------------------------------------------------------
+GpuDVFSHandler::GpuDVFSHandler(const Params &p)
     : SimObject(p),
       sysClkDomain(p.sys_clk_domain),
       enableHandler(p.enable),
-      _transLatency(p.transition_latency)
+      _transLatency(p.transition_latency),
+      // Cast the generic SimObject pointer from Python to a Shader pointer
+      gpuShader(dynamic_cast<Shader*>(p.shader)),
+      // Initialize the decisionEvent to call 'runDecisionLoop' when triggered
+      decisionEvent([this]{ runDecisionLoop(); }, name())
 {
-    // Check supplied list of domains for sanity and add them to the
-    // domain ID -> domain* hash
-    for (auto dit = p.domains.begin(); dit != p.domains.end(); ++dit) {
-        SrcClockDomain *d = *dit;
-        DomainID domain_id = d->domainID();
-
-        fatal_if(sysClkDomain == d, "DVFS: Domain config list has a "\
-                 "system clk domain entry");
-        fatal_if(domain_id == SrcClockDomain::emptyDomainID,
-                 "DVFS: Controlled domain %s needs to have a properly "\
-                 " assigned ID.\n", d->name());
-
-        auto entry = std::make_pair(domain_id, d);
-        bool new_elem = domains.insert(entry).second;
-        fatal_if(!new_elem, "DVFS: Domain %s with ID %d does not have a "\
-                 "unique ID.\n", d->name(), domain_id);
-
-        // Create a dedicated event slot per known domain ID
-        UpdateEvent *event = &updatePerfLevelEvents[domain_id];
-        event->domainIDToSet = d->domainID();
-
-        // Add domain ID to the list of domains
-        domainIDList.push_back(d->domainID());
+    // Populate the map of domains provided in the Python config
+    for (auto *d : p.domains) {
+        domains[d->domainID()] = d;
     }
-    UpdateEvent::gpudvfsHandler = this;
 }
 
-GPUDVFSHandler *GPUDVFSHandler::UpdateEvent::gpudvfsHandler;
-
-GPUDVFSHandler::DomainID
-GPUDVFSHandler::domainID(uint32_t index) const
+// ----------------------------------------------------------------------
+// Startup: Kicks off the autonomous loop
+// ----------------------------------------------------------------------
+void GpuDVFSHandler::startup()
 {
-    fatal_if(index >= numDomains(), "GPUDVFS: Requested index out of "\
-             "bound, max value %d\n", (domainIDList.size() - 1));
-
-    assert(domains.find(domainIDList[index]) != domains.end());
-
-    return domainIDList[index];
+    if (enableHandler) {
+        // Schedule the first decision check 100ms (100 billion ticks) into the future.
+        // This gives the OS time to boot without us polling uselessly.
+        // 100ms = 100 * 1,000 * 1,000 * 1,000 ticks (assuming 1ps)
+        schedule(decisionEvent, curTick() + 100000000000); 
+    }
 }
 
-bool
-GPUDVFSHandler::validDomainID(DomainID domain_id) const
+// ----------------------------------------------------------------------
+// Helper: Find a domain by ID
+// ----------------------------------------------------------------------
+SrcClockDomain *
+GpuDVFSHandler::findDomain(DomainID domain_id) const
 {
-    assert(isEnabled());
-    // This is ensure that the domain id as requested by the software is
-    // availabe in the handler.
-    if (domains.find(domain_id) != domains.end())
-        return true;
-    warn("GPUDVFS: invalid domain ID %d, the DVFS handler does not "\
-          "handle this domain\n", domain_id);
-    return false;
+    auto it = domains.find(domain_id);
+    if (it == domains.end())
+        return nullptr;
+
+    return it->second;
 }
 
-bool
-GPUDVFSHandler::perfLevel(DomainID domain_id, PerfLevel perf_level)
+// ----------------------------------------------------------------------
+// Gpu CU SPYING IMPLEMENTATION
+// ----------------------------------------------------------------------
+// GPU access : system-->gpuShader->cuList[0]->wfList[0]->pc();
+Addr GpuDVFSHandler::readGpuPC()
 {
-    assert(isEnabled());
-
-    DPRINTF(GPUDVFS, "GPUDVFS: setPerfLevel domain %d -> %d\n",
-          domain_id, perf_level);
-
-    auto d = findDomain(domain_id);
-    if (!d->validPerfLevel(perf_level)) {
-        warn("GPUDVFS: invalid performance level %d for domain ID "\
-              "%d, request ignored\n", perf_level, domain_id);
-        return false;
+    // Entry Point: gpuShader (The "System->Shader" part)
+    if (!gpuShader) {
+        return 0;
     }
 
-    UpdateEvent *update_event = &updatePerfLevelEvents[domain_id];
-    // Drop an old DVFS change request once we have established that this is a
-    // reasonable request
-    if (update_event->scheduled()) {
-        DPRINTF(GPUDVFS, "GPUDVFS: Overwriting the previous DVFS event.\n");
-        deschedule(update_event);
+    // Traversal: Iterate over cuList
+    for (auto *cu : gpuShader->cuList) {
+        // Traversal: Iterate over wfList (2D Vector: [SIMD][Slot])
+        // wavefront-wfList is std::vector<std::deque<Wavefront*
+        for (const auto &simd_waves : cu->wfList) {
+            // Traversal: Iterate over specific wavefronts in this SIMD
+            for (auto *wave : simd_waves) {
+                // Filter: only care about active waves (Not Stopped)
+                if (wave->getStatus() != Wavefront::S_STOPPED) {
+                    // 6. Extraction: Grab the PC
+                    return wave->pc();
+                }
+            }
+        }
     }
-
-    update_event->perfLevelToSet = perf_level;
-
-    // State changes that restore to the current state (and /
-    // or overwrite a not
-    // yet completed in-flight request) will be squashed
-    if (d->perfLevel() == perf_level) {
-        DPRINTF(GPUDVFS, "GPUDVFS: Ignoring ineffective performance "\
-                "level change %d -> %d\n", d->perfLevel(), perf_level);
-        return false;
-    }
-
-    // At this point, a new transition will certainly take place -> schedule
-    Tick when = curTick() + _transLatency;
-    DPRINTF(GPUDVFS, "GPUDVFS: Update for perf event scheduled "\
-        "sfor %ld\n", when);
-
-    schedule(update_event, when);
-    return true;
+    
+    // If no active wavefronts are found (GPU is idle), return 0
+    return 0;
 }
 
-void
-GPUDVFSHandler::UpdateEvent::updatePerfLevel()
+
+// ----------------------------------------------------------------------
+// THE GOVERNOR LOGIC LOOP
+// ----------------------------------------------------------------------
+void GpuDVFSHandler::runDecisionLoop()
 {
-    // Perform explicit stats dump for power estimation before performance
-    // level migration
+    // Target the specific Domain ID for the GPU (Assuming ID 1 set in Python)
+    DomainID targetDomain = 1;
+    auto *domain = findDomain(targetDomain);
+
+    // Safety check: If domain isn't ready, wait and try again later
+    if (!domain) {
+        schedule(decisionEvent, curTick() + 10000000000); // Retry in 10ms
+        return;
+    }
+
+    // Get the current Program Counter
+    Addr current_pc = readGpuPC();
+
+    // ------------------------------------------------------------------
+    // ADAPTIVE POLLING LOGIC
+    // ------------------------------------------------------------------
+    Tick nextPollTick;
+
+    if (current_pc == 0) {
+        // Case 1: GPU is IDLE (Booting or Waiting).
+        // Do NOT check again for a long time (e.g., 10ms).
+        // inform("GPU_DVFS: GPU Idle. Sleeping for 10ms...");
+        nextPollTick = 10000000000; 
+        
+        // Schedule and exit immediately (no need to change perf level)
+        schedule(decisionEvent, curTick() + nextPollTick);
+        return;
+    } else {
+        // Case 2: GPU is ACTIVE (Running a Kernel).
+        // We must poll fast to catch phase changes.
+        // 10us = 10,000,000 ticks.
+        nextPollTick = 10000000; 
+        inform("GPU_DVFS: Captured Real Wavefront PC: %#x", current_pc);
+    }
+    // ------------------------------------------------------------------    
+
+    // ------------------------------------------------------------------
+    // Mod-15000 Cyclical Logic on GPU PC
+    // ------------------------------------------------------------------
+    // define a "block" of execution as 15000 PC increments.
+    // Block 0 (PC 0-14999) -> Level 0 (High Perf)
+    // Block 1 (PC 15000-29999) -> Level 1 (Med Perf) ... #TODO We will replace this with the PCSTALL
+    // ------------------------------------------------------------------
+    
+    uint64_t block_index = current_pc / 15000;
+    PerfLevel desiredLevel = block_index % 3;
+
+    PerfLevel currentLevel = domain->perfLevel();
+
+    // Actuate: Only change settings if the desired level differs from current
+    if (desiredLevel != currentLevel) {
+        inform("GPU_DVFS: Switching Level %d -> %d at PC %#x", currentLevel, desiredLevel, current_pc);
+
+        // Create a separate event to perform the update
+        auto *e = new UpdateEvent();
+        e->handler = this;
+        e->domainIDToSet = targetDomain;
+        e->perfLevelToSet = desiredLevel;
+        
+        // Execute the update immediately
+        e->updatePerfLevel();
+    }
+
+    // Reschedule based on whether we are active or idle
+    schedule(decisionEvent, curTick() + nextPollTick);
+}
+
+// ----------------------------------------------------------------------
+// Actuation Event: Physically changes the clock/voltage
+// ----------------------------------------------------------------------
+void GpuDVFSHandler::UpdateEvent::updatePerfLevel()
+{
+    // dump() forces gem5 to write current stats to file.
+    // reset() clears the counters.
+    // This creates "buckets" of stats for each frequency phase.
     statistics::dump();
     statistics::reset();
 
-    // Update the performance level in the clock domain
-    auto d = dvfsHandler->findDomain(domainIDToSet);
-    assert(d->perfLevel() != perfLevelToSet);
-
+    // Retrieve the domain and set the new level
+    auto d = handler->findDomain(domainIDToSet);
+    
+    // This call modifies the SrcClockDomain's period and the VoltageDomain's voltage
     d->perfLevel(perfLevelToSet);
-}
 
-double
-GPUDVFSHandler::voltageAtPerfLevel(DomainID domain_id,
-  PerfLevel perf_level) const
-{
-    VoltageDomain *d = findDomain(domain_id)->voltageDomain();
-    assert(d);
-    PerfLevel n = d->numVoltages();
-    if (perf_level < n)
-        return d->voltage(perf_level);
-
-    // Request outside of the range of the voltage domain
-    if (n == 1) {
-        DPRINTF(GPUDVFS, "GPUDVFS: Request for perf-level %i for "\
-                "voltage domain %s.  Returning voltage at level 0: %.2f "\
-                "V\n", perf_level, d->name(), d->voltage(0));
-        // Special case for single point voltage domain -> same voltage for
-        // all points
-        return d->voltage(0);
-    }
-
-    warn("GPUDVFSHandler %s reads illegal voltage level %u from "\
-         "VoltageDomain %s. Returning 0 V\n", name(), perf_level, d->name());
-    return 0.;
-}
-
-void
-GPUDVFSHandler::serialize(CheckpointOut &cp) const
-{
-    //This is to ensure that the handler status is maintained during the
-    //entire simulation run and not changed from command line during checkpoint
-    //and restore
-    SERIALIZE_SCALAR(enableHandler);
-
-    // Pull out the hashed data structure into easy-to-serialise arrays;
-    // ensuring that the data associated with any pending update event is saved
-    std::vector<DomainID> domain_ids;
-    std::vector<PerfLevel> perf_levels;
-    std::vector<Tick> whens;
-    for (const auto &ev_pair : updatePerfLevelEvents) {
-        DomainID id = ev_pair.first;
-        const UpdateEvent *event = &ev_pair.second;
-
-        assert(id == event->domainIDToSet);
-        domain_ids.push_back(id);
-        perf_levels.push_back(event->perfLevelToSet);
-        whens.push_back(event->scheduled() ? event->when() : 0);
-    }
-    SERIALIZE_CONTAINER(domain_ids);
-    SERIALIZE_CONTAINER(perf_levels);
-    SERIALIZE_CONTAINER(whens);
-}
-
-void
-GPUDVFSHandler::unserialize(CheckpointIn &cp)
-{
-    bool temp = enableHandler;
-
-    UNSERIALIZE_SCALAR(enableHandler);
-
-    if (temp != enableHandler) {
-        warn("GPUDVFS: Forcing enable handler status to unserialized "\
-              "value of %d", enableHandler);
-    }
-
-    // Reconstruct the map of domain IDs and their scheduled events
-    std::vector<DomainID> domain_ids;
-    std::vector<PerfLevel> perf_levels;
-    std::vector<Tick> whens;
-    UNSERIALIZE_CONTAINER(domain_ids);
-    UNSERIALIZE_CONTAINER(perf_levels);
-    UNSERIALIZE_CONTAINER(whens);
-
-    for (size_t i = 0; i < domain_ids.size(); ++i) {;
-        UpdateEvent *event = &updatePerfLevelEvents[domain_ids[i]];
-
-        event->domainIDToSet = domain_ids[i];
-        event->perfLevelToSet = perf_levels[i];
-
-        // Schedule all previously scheduled events
-        if (whens[i])
-            schedule(event, whens[i]);
-    }
-    UpdateEvent::dvfsHandler = this;
-}
+} 
 
 } // namespace gem5
+

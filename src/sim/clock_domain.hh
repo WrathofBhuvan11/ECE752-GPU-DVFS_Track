@@ -70,6 +70,7 @@ class Clocked;
  */
 class ClockDomain : public SimObject
 {
+  // Bhuvi-Grant access to DVFSHandler to allow it to change clock periods
   friend class DVFSHandler;
   protected:
 

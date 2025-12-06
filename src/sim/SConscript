@@ -55,6 +55,11 @@ SimObject(
 SimObject('VoltageDomain.py', sim_objects=['VoltageDomain'])
 SimObject('System.py', sim_objects=['System'], enums=['MemoryMode'])
 SimObject('DVFSHandler.py', sim_objects=['DVFSHandler'])
+
+
+# dvfs GPU Handler
+SimObject('GpuDVFSHandler.py', sim_objects=['GpuDVFSHandler'])
+
 SimObject('SubSystem.py', sim_objects=['SubSystem'])
 SimObject('RedirectPath.py', sim_objects=['RedirectPath'])
 SimObject('PowerState.py', sim_objects=['PowerState'], enums=['PwrState'])
@@ -103,6 +108,9 @@ Source('se_signal.cc')
 Source('linear_solver.cc')
 Source('system.cc')
 Source('dvfs_handler.cc')
+
+Source('gpu_dvfs_handler.cc')
+
 Source('clocked_object.cc')
 Source('mathexpr.cc')
 Source('power_state.cc')
@@ -162,6 +170,7 @@ DebugFlag('WorkItems')
 DebugFlag('ClockDomain')
 DebugFlag('VoltageDomain')
 DebugFlag('DVFS')
+DebugFlag('GpuDVFS')
 DebugFlag('Vma')
 DebugFlag('PowerDomain')
 DebugFlag('EnteringEventQueue')
