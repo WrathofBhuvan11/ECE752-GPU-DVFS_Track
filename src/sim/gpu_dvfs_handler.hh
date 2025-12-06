@@ -6,7 +6,8 @@
 #include "sim/clock_domain.hh"
 #include "sim/eventq.hh"
 #include <map>
-//GPU Headers required to spy on Wavefronts
+
+// GPU Headers required to spy on Wavefronts
 #include "gpu-compute/shader.hh"
 #include "gpu-compute/compute_unit.hh"
 #include "gpu-compute/wavefront.hh"
@@ -16,10 +17,14 @@ namespace gem5
 
 /**
  * GpuDVFSHandler
- * * A specialized handler for managing GPU Dynamic Voltage and Frequency Scaling (DVFS).
- * Unlike the standard passive DVFSHandler, this class is "active": it contains its own
- * decision loop that wakes up periodically to inspect GPU state (Program Counter)
- * and make frequency scaling decisions autonomously.
+ * A specialized handler for managing GPU Dynamic Voltage and Frequency Scaling (DVFS).
+ * * IMPLEMENTATION STRATEGY: PCStall (Predict, Don't React)
+ * --------------------------------------------------------
+ * Instead of reacting to past utilization history (which is often too late), 
+ * this handler scans the instantaneous state (Program Counter distribution) 
+ * of all active wavefronts. 
+ * * - High PC Concentration implies synchronization/stalls (Barrier/Memory).
+ * - Low PC Concentration implies independent progress (ALU/Throughput).
  */
 class GpuDVFSHandler : public SimObject
 {
@@ -27,41 +32,30 @@ class GpuDVFSHandler : public SimObject
     typedef GpuDVFSHandlerParams Params;
     GpuDVFSHandler(const Params &p);
 
-    // Standard gem5 typedefs for Domain IDs and Performance Levels
+    // Standard gem5 typedefs
     typedef SrcClockDomain::DomainID DomainID;
     typedef SrcClockDomain::PerfLevel PerfLevel;
 
     /**
      * startup()
      * Called by gem5 after all objects are created but before simulation starts.
-     * We use this to schedule the first iteration of our decision loop.
+     * Use this to schedule the first iteration of our decision loop.
      */
     void startup() override;
 
   private:
-    /**
-     * Container to store pointers to the clock domains this handler manages.
-     * Mapped by DomainID (integer) -> SrcClockDomain* (object pointer).
-     */
+    // Container to store pointers to the clock domains
     typedef std::map<DomainID, SrcClockDomain*> Domains;
     Domains domains;
     
-    // Pointer to the system clock domain (required for scheduling reference, though unused in toy logic)
     SrcClockDomain *sysClkDomain;
-    
-    // Master switch to enable/disable the handler from Python config
     bool enableHandler;
-    
-    // Latency to apply when switching frequencies (simulates PLL lock time)
     Tick _transLatency;
 
     // Pointer to the real GPU hardware
     Shader *gpuShader;
 
-    /**
-     * The main event wrapper. This wraps the 'runDecisionLoop' function
-     * so it can be scheduled on the gem5 event queue.
-     */
+    // Main event wrapper for the decision loop
     EventFunctionWrapper decisionEvent;
     
     // ----------------------------------------------------------------------
@@ -70,20 +64,21 @@ class GpuDVFSHandler : public SimObject
 
     /**
      * runDecisionLoop()
-     * The "Governor" logic. This function:
-     * 1. Wakes up periodically.
-     * 2. Reads the GPU PC.
-     * 3. Decides the target performance level based on a Modulo-150 policy.  #TODO We will insert PCSTALL Here
-     * 4. Schedules an update if necessary.
-     * 5. Reschedules itself to run again.
+     * The "Governor" logic. 
+     * 1. Aggregates global GPU state.
+     * 2. Calculates Wavefront PC Concentration.
+     * 3. Predicts Stall vs. Busy.
+     * 4. Actuates frequency changes.
      */
     void runDecisionLoop();
 
     /**
-     * readGpuPC()
-     * A helper function to fetch the current Program Counter (PC) from the GPU.
+     * scanGlobalWavefrontState()
+     * Scans ALL Compute Units and ALL Wavefronts.
+     * Returns a Histogram: <PC Address, Count of Wavefronts at this PC>
+     * This provides the "Signature" of the workload at this exact tick.
      */
-    Addr readGpuPC(); 
+    std::map<Addr, int> scanGlobalWavefrontState(); 
 
     /**
      * findDomain()
@@ -94,21 +89,18 @@ class GpuDVFSHandler : public SimObject
     /**
      * UpdateEvent
      * A specialized event that performs the actual physical clock change.
-     * We separate the "Decision" (logic) from the "Update" (actuation) to 
+     * Separate the "Decision" (logic) from the "Update" (actuation) to 
      * allow for modeling transition latency if desired.
      */
     struct UpdateEvent : public Event
     {
-        GpuDVFSHandler *handler;       // Pointer back to the parent handler
-        DomainID domainIDToSet;        // Which domain to change
-        PerfLevel perfLevelToSet;      // Which level (0, 1, 2) to switch to
+        GpuDVFSHandler *handler;       
+        DomainID domainIDToSet;        
+        PerfLevel perfLevelToSet;      
 
         UpdateEvent() : Event(Default_Pri, AutoDelete), handler(nullptr) {}
         
-        // The process() method is called by the event queue when the event fires
         void process() override { updatePerfLevel(); }
-        
-        // Performs the actual frequency/voltage switch
         void updatePerfLevel();
         
         const char *description() const override { return "GPU DVFS Update Perf Level"; }
@@ -118,3 +110,5 @@ class GpuDVFSHandler : public SimObject
 } // namespace gem5
 
 #endif // __SIM_GPU_DVFS_HANDLER_HH__
+
+

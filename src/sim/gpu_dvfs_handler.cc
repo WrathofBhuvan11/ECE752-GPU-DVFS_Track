@@ -1,6 +1,6 @@
 #include "sim/gpu_dvfs_handler.hh"
 #include "base/trace.hh"
-#include "debug/DVFS.hh"
+#include "debug/GpuDVFS.hh"
 #include "sim/stat_control.hh"
 
 // definition of Shader for the dynamic_cast
@@ -27,155 +27,209 @@ GpuDVFSHandler::GpuDVFSHandler(const Params &p)
     for (auto *d : p.domains) {
         domains[d->domainID()] = d;
     }
+    // DEBUG PRINT 1: Constructor
+    inform("GPU_DVFS: Handler Created. controlling %d domains.", domains.size());
 }
 
 // ----------------------------------------------------------------------
-// Startup: Kicks off the autonomous loop
+// Startup
 // ----------------------------------------------------------------------
 void GpuDVFSHandler::startup()
 {
+    // DEBUG PRINT 2: Startup
+    inform("GPU_DVFS: Startup called.");
+
     if (enableHandler) {
-        // Schedule the first decision check 100ms (100 billion ticks) into the future.
-        // This gives the OS time to boot without us polling uselessly.
-        // 100ms = 100 * 1,000 * 1,000 * 1,000 ticks (assuming 1ps)
-        schedule(decisionEvent, curTick() + 100000000000); 
+        // Wait 100ms (100 billion ticks) for OS boot before first poll
+        // This prevents DVFS from interfering with initialization
+        inform("GPU_DVFS: Enabled! Scheduling first check in 0.5ms.");
+        schedule(decisionEvent, curTick() + 5000000000); 
+    } else {                                
+        inform("GPU_DVFS: Handler is DISABLED in params. No logic will run.");
     }
 }
 
 // ----------------------------------------------------------------------
-// Helper: Find a domain by ID
+// Helper: Find a domain
 // ----------------------------------------------------------------------
 SrcClockDomain *
 GpuDVFSHandler::findDomain(DomainID domain_id) const
 {
     auto it = domains.find(domain_id);
-    if (it == domains.end())
-        return nullptr;
-
+    if (it == domains.end()) return nullptr;
     return it->second;
 }
 
 // ----------------------------------------------------------------------
-// Gpu CU SPYING IMPLEMENTATION
+// GLOBAL WAVEFRONT SCANNER (Data Collection Phase)
 // ----------------------------------------------------------------------
-// GPU access : system-->gpuShader->cuList[0]->wfList[0]->pc();
-Addr GpuDVFSHandler::readGpuPC()
+std::map<Addr, int> GpuDVFSHandler::scanGlobalWavefrontState()
 {
-    // Entry Point: gpuShader (The "System->Shader" part)
+    std::map<Addr, int> pcHistogram;
+
     if (!gpuShader) {
-        return 0;
+        inform("GPU_DVFS ERROR: gpuShader pointer is NULL!");
+        return pcHistogram;
     }
 
-    // Traversal: Iterate over cuList
+    int totalWavesSeen = 0;
+
+    // Iterate over ALL Compute Units
     for (auto *cu : gpuShader->cuList) {
-        // Traversal: Iterate over wfList (2D Vector: [SIMD][Slot])
-        // wavefront-wfList is std::vector<std::deque<Wavefront*
+        // Iterate over ALL SIMDs
         for (const auto &simd_waves : cu->wfList) {
-            // Traversal: Iterate over specific wavefronts in this SIMD
+            // Iterate over ALL Wavefronts
             for (auto *wave : simd_waves) {
-                // Filter: only care about active waves (Not Stopped)
+                totalWavesSeen++; 
                 if (wave->getStatus() != Wavefront::S_STOPPED) {
-                    // 6. Extraction: Grab the PC
-                    return wave->pc();
+                    // Add to histogram: This counts how many waves are at this specific PC
+                    pcHistogram[wave->pc()]++;
                 }
+                ////else if (wave->getStatus() == Wavefront::S_WAIT_CNT) {
+                ////    pcHistogram[wave->pc()].waitingCount++;
+                ////}
             }
         }
     }
-    
-    // If no active wavefronts are found (GPU is idle), return 0
-    return 0;
+
+    //------------- will remove in the future- only temp debug----------------
+    // DEBUG: Periodic Heartbeat for "Idle" states
+    // Prints every 100,000 checks to prove it's scanning but finding nothing active
+    static int idlePrintCounter = 0;
+    if (pcHistogram.empty()) {
+        idlePrintCounter++;
+        if (idlePrintCounter % 100000 == 0) {
+             inform("GPU_DVFS HEARTBEAT: Scanned %d total waves, but 0 are active. GPU is IDLE.", totalWavesSeen);
+        }
+    }
+    //------------------------------------------------------------------------
+
+    return pcHistogram;
 }
 
 
 // ----------------------------------------------------------------------
-// THE GOVERNOR LOGIC LOOP
+// THE PCSTALL GOVERNOR LOGIC (Decision Phase)
 // ----------------------------------------------------------------------
 void GpuDVFSHandler::runDecisionLoop()
 {
-    // Target the specific Domain ID for the GPU (Assuming ID 1 set in Python)
-    DomainID targetDomain = 1;
-    auto *domain = findDomain(targetDomain);
+    if (domains.empty()) {
+        inform("GPU_DVFS ERROR: No domains registered to handler!");
+        // Schedule check again later to avoid busy-loop crash, though this is fatal
+        schedule(decisionEvent, curTick() + 10000000000); 
+        return;
+    }
 
-    // Safety check: If domain isn't ready, wait and try again later
+    // Grab the first available domain (since we only have one GPU domain)
+    auto it = domains.begin();
+    SrcClockDomain *domain = it->second;
+    DomainID targetDomain = it->first; 
+
+    // DEBUG: Print what we found
+    // inform("GPU_DVFS: Operating on Domain ID %d", targetDomain);
+
     if (!domain) {
-        schedule(decisionEvent, curTick() + 10000000000); // Retry in 10ms
+        inform("GPU_DVFS ERROR: Domain pointer is null for ID %d", targetDomain);
+        schedule(decisionEvent, curTick() + 10000000000);
         return;
     }
 
-    // Get the current Program Counter
-    Addr current_pc = readGpuPC();
-
     // ------------------------------------------------------------------
-    // ADAPTIVE POLLING LOGIC
+    // 1. GATHER PHASE: Get the global distribution of PCs
     // ------------------------------------------------------------------
-    Tick nextPollTick;
+    std::map<Addr, int> pcMap = scanGlobalWavefrontState();
 
-    if (current_pc == 0) {
-        // Case 1: GPU is IDLE (Booting or Waiting).
-        // Do NOT check again for a long time (e.g., 10ms).
-        // inform("GPU_DVFS: GPU Idle. Sleeping for 10ms...");
-        nextPollTick = 10000000000; 
-        
-        // Schedule and exit immediately (no need to change perf level)
-        schedule(decisionEvent, curTick() + nextPollTick);
+    // Poll period: 10us (10,000,000 ticks)
+    Tick nextPollTick = 10000000;
+
+    // Case 1: GPU is IDLE (Map is empty)
+    if (pcMap.empty()) {
+        // If GPU is idle, drop to min freq, or just sleep.
+        schedule(decisionEvent, curTick() + 10000000000);
         return;
-    } else {
-        // Case 2: GPU is ACTIVE (Running a Kernel).
-        // We must poll fast to catch phase changes.
-        // 10us = 10,000,000 ticks.
-        nextPollTick = 10000000; 
-        inform("GPU_DVFS: Captured Real Wavefront PC: %#x", current_pc);
     }
-    // ------------------------------------------------------------------    
 
     // ------------------------------------------------------------------
-    // Mod-15000 Cyclical Logic on GPU PC
+    // 2. ANALYZE PHASE: Calculate PC Concentration
     // ------------------------------------------------------------------
-    // define a "block" of execution as 15000 PC increments.
-    // Block 0 (PC 0-14999) -> Level 0 (High Perf)
-    // Block 1 (PC 15000-29999) -> Level 1 (Med Perf) ... #TODO We will replace this with the PCSTALL
-    // ------------------------------------------------------------------
-    
-    uint64_t block_index = current_pc / 15000;
-    PerfLevel desiredLevel = block_index % 3;
+    int maxWavesAtOnePC = 0;
+    int totalActiveWaves = 0;
+    Addr dominantPC = 0;
 
+    for (auto const& [pc, count] : pcMap) {
+        totalActiveWaves += count;
+        if (count > maxWavesAtOnePC) {
+            maxWavesAtOnePC = count;
+            dominantPC = pc;
+        }
+    }
+
+    // "Concentration" metric: 0.0 to 1.0
+    // High Concentration implies waves are synchronized at a bottleneck (Stall).
+    // Low Concentration implies waves are executing freely (Compute).
+    double concentration = 0.0;
+    if (totalActiveWaves > 0) {
+        concentration = (double)maxWavesAtOnePC / totalActiveWaves;
+    }
+
+    // DEBUG PRINT 4: Logic input
+    inform("GPU_DVFS: Waves: %d | Concentration: %.2f | DomPC: %#x",
+           totalActiveWaves, concentration, dominantPC);
+
+    // ------------------------------------------------------------------
+    // 3. DECISION PHASE: Predict Stall vs Compute
+    // ------------------------------------------------------------------
     PerfLevel currentLevel = domain->perfLevel();
+    PerfLevel desiredLevel = currentLevel;
 
-    // Actuate: Only change settings if the desired level differs from current
+    // > 50% Concentration -> STALL -> Low Freq (Level 2)
+    // < 50% Concentration -> COMPUTE -> High Freq (Level 0)
+    if (concentration > 0.5) {
+        // PREDICTION: STALL
+        // Strategy: Memory/Barrier bound. Lower Core Frequency to save energy.
+        // Level 2 = Low Perf / Low Voltage
+        desiredLevel = 2;
+        DPRINTF(GpuDVFS, "PCStall: STALL DETECTED (C=%.2f at PC %#x). Target: Low Freq.\n",
+                concentration, dominantPC);
+    } else {
+        // PREDICTION: COMPUTE / THROUGHPUT
+        // Strategy: ALU bound. Raise Core Frequency to maximize throughput.
+        // Level 0 = Max Perf / Max Voltage
+        desiredLevel = 0;
+        DPRINTF(GpuDVFS, "PCStall: COMPUTE DETECTED (C=%.2f). Target: Max Freq.\n",
+                concentration);
+    }
+
+    // ------------------------------------------------------------------
+    // 4. ACTUATION PHASE
+    // ------------------------------------------------------------------
     if (desiredLevel != currentLevel) {
-        inform("GPU_DVFS: Switching Level %d -> %d at PC %#x", currentLevel, desiredLevel, current_pc);
+        inform("GPU_DVFS: Update %d -> %d | ActiveWaves: %d | Concentration: %.2f",
+               currentLevel, desiredLevel, totalActiveWaves, concentration);
 
-        // Create a separate event to perform the update
         auto *e = new UpdateEvent();
         e->handler = this;
-        e->domainIDToSet = targetDomain;
+        e->domainIDToSet = targetDomain; // Use the dynamically found ID
         e->perfLevelToSet = desiredLevel;
-        
-        // Execute the update immediately
         e->updatePerfLevel();
     }
 
-    // Reschedule based on whether we are active or idle
+    // Schedule next check
     schedule(decisionEvent, curTick() + nextPollTick);
 }
 
+
 // ----------------------------------------------------------------------
-// Actuation Event: Physically changes the clock/voltage
+// Actuation Event
 // ----------------------------------------------------------------------
 void GpuDVFSHandler::UpdateEvent::updatePerfLevel()
 {
-    // dump() forces gem5 to write current stats to file.
-    // reset() clears the counters.
-    // This creates "buckets" of stats for each frequency phase.
+    // This dumping is what creates the multiple blocks in stats.txt
     statistics::dump();
     statistics::reset();
 
-    // Retrieve the domain and set the new level
     auto d = handler->findDomain(domainIDToSet);
-    
-    // This call modifies the SrcClockDomain's period and the VoltageDomain's voltage
     d->perfLevel(perfLevelToSet);
-
 } 
 
 } // namespace gem5
