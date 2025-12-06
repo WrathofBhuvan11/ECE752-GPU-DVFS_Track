@@ -1,4 +1,4 @@
-# Copyright (c) 2021 Advanced Micro Devices, Inc.
+# Copyright (c) 2022 Advanced Micro Devices, Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -49,7 +49,8 @@ def makeGpuFSSystem(args):
         "lpj=7999923",
         f"root={args.root_partition}",
         "drm_kms_helper.fbdev_emulation=0"
-      
+        #"modprobe.blacklist=amdgpu",
+        #"modprobe.blacklist=psmouse",
     ]
     cmdline = " ".join(boot_options)
 

@@ -6,6 +6,7 @@
 // definition of Shader for the dynamic_cast
 #include "gpu-compute/shader.hh"
 #include "gpu-compute/compute_unit.hh"
+#include <cmath>
 
 namespace gem5
 {
@@ -107,12 +108,55 @@ std::map<Addr, int> GpuDVFSHandler::scanGlobalWavefrontState()
     return pcHistogram;
 }
 
+int GpuDVFSHandler::checkIfGPUIsRunning()
+{
+    // Iterate over ALL Compute Units
+    int x = 0;
+    for (auto *cu : gpuShader->cuList) {
+        // Iterate over ALL SIMDs
+        double ipc = cu->stats.ipc.total();
+        if(!std::isnan(ipc) && ipc > 0){
+            return 1;
+        }
+    }
+    return 0;
+}
 
 // ----------------------------------------------------------------------
 // THE PCSTALL GOVERNOR LOGIC (Decision Phase)
 // ----------------------------------------------------------------------
 void GpuDVFSHandler::runDecisionLoop()
 {
+    /*
+    if(curTick() >= 90000000000){
+        int test = testGPUCUs();
+        if (test)
+            schedule(decisionEvent, curTick() + 10000000); 
+        else
+            schedule(decisionEvent, curTick() + 10000000000);
+    }
+    else
+        schedule(decisionEvent, curTick() + 10000000000);
+    */
+    static int printOnce = 0;     
+    static int printOnce2 = 0;                      
+    
+    int check = checkIfGPUIsRunning();
+    if(!check) {
+        if(!printOnce2){
+           inform("GPU_DVFS: GPU NOT RUNNING YET!");
+           printOnce2 =1;
+        }
+        schedule(decisionEvent, curTick() + 10000000000);
+        return;
+    }
+    else{
+        if(!printOnce){
+           inform("GPU_DVFS: GPU IS RUNNING!");
+           printOnce =1;
+        }
+    }
+
     if (domains.empty()) {
         inform("GPU_DVFS ERROR: No domains registered to handler!");
         // Schedule check again later to avoid busy-loop crash, though this is fatal
@@ -168,9 +212,16 @@ void GpuDVFSHandler::runDecisionLoop()
     // High Concentration implies waves are synchronized at a bottleneck (Stall).
     // Low Concentration implies waves are executing freely (Compute).
     double concentration = 0.0;
+    static double prevConcentration = 0;;
     if (totalActiveWaves > 0) {
         concentration = (double)maxWavesAtOnePC / totalActiveWaves;
     }
+
+    if(concentration != prevConcentration){
+        inform("GPU_DVFS: concentration changed: %d", concentration);
+    }
+    prevConcentration = concentration;
+    
 
     // DEBUG PRINT 4: Logic input
     inform("GPU_DVFS: Waves: %d | Concentration: %.2f | DomPC: %#x",
@@ -181,7 +232,6 @@ void GpuDVFSHandler::runDecisionLoop()
     // ------------------------------------------------------------------
     PerfLevel currentLevel = domain->perfLevel();
     PerfLevel desiredLevel = currentLevel;
-
     // > 50% Concentration -> STALL -> Low Freq (Level 2)
     // < 50% Concentration -> COMPUTE -> High Freq (Level 0)
     if (concentration > 0.5) {
@@ -216,6 +266,7 @@ void GpuDVFSHandler::runDecisionLoop()
 
     // Schedule next check
     schedule(decisionEvent, curTick() + nextPollTick);
+    
 }
 
 

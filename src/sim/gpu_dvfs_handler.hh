@@ -80,6 +80,8 @@ class GpuDVFSHandler : public SimObject
      */
     std::map<Addr, int> scanGlobalWavefrontState(); 
 
+    int checkIfGPUIsRunning();
+
     /**
      * findDomain()
      * Helper to retrieve a clock domain object given its ID.

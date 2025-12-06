@@ -27,6 +27,11 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+"""This file creates an X86 system with a KVM CPU and GPU device capable of
+running the MI300 ISA (gfx942). Most of this file sets up a runscript which
+will load in a binary, shell script, or python file from the host and run that
+within gem5. Jump to line 146 for list of system parameters to configure.
+"""
 
 import argparse
 import base64
@@ -51,35 +56,24 @@ demo_runscript_without_checkpoint = """\
 export LD_LIBRARY_PATH=/opt/rocm/lib:$LD_LIBRARY_PATH
 export HSA_ENABLE_INTERRUPT=0
 export HCC_AMDGPU_TARGET=gfx942
-export HSA_OVERRIDE_GFX_VERSION="9.4.2"
 dmesg -n8
+cat /proc/cpuinfo
 dd if=/root/roms/mi300.rom of=/dev/mem bs=1k seek=768 count=128
-if [ ! -f /lib/modules/`uname -r`/updates/dkms/amdgpu.ko ]; then
+
+if [ -f /home/gem5/load_amdgpu.sh ]; then
+    sh /home/gem5/load_amdgpu.sh
+elif [ ! -f /lib/modules/`uname -r`/updates/dkms/amdgpu.ko ]; then
     echo "ERROR: Missing DKMS package for kernel `uname -r`. Exiting gem5."
     /sbin/m5 exit
+else
+    # Backward compatibility with old disk images (ROCm 6.1)
+    modprobe -v amdgpu ip_block_mask=0x6f ppfeaturemask=0 dpm=0 audio=0 ras_enable=0 discovery=2
 fi
-modprobe -v amdgpu ip_block_mask=0x6f ppfeaturemask=0 dpm=0 audio=0 ras_enable=0 discovery=2
 
-echo "GEM5: Starting Runscript..."
 echo "Running {} {}"
-
-# Decode the embedded binary (injected via python format)
-echo "{}" | base64 -d > /tmp/myapp
-chmod +x /tmp/myapp
-
-echo "GEM5: Checking Binary..."
-ls -l /tmp/myapp
-file /tmp/myapp
-
-echo "GEM5: Running Application..."
-# Run the decoded app instead of the script itself
-/tmp/myapp {} > /tmp/app.log 2>&1
-EXIT_CODE=$?
-
-echo "GEM5: Application Finished with Exit Code: $EXIT_CODE"
-echo "GEM5: Application Output:"
-cat /tmp/app.log
-
+echo "{}" | base64 -d > myapp
+chmod +x myapp
+./myapp {}
 /sbin/m5 exit
 """
 
@@ -171,7 +165,6 @@ def runMI300GPUFS(
     # Defaults for MI300X
     args.gpu_device = "MI300X"
     args.dgpu_mem_size = "16GiB"  # GPU memory size, must be 16GiB currently.
-
 
     # See: https://rocm.docs.amd.com/en/latest/conceptual/gpu-arch/mi300.html
     # Topology for one XCD. Number of CUs is approximately 304 / 8, rounded
