@@ -35,6 +35,7 @@ class GpuDVFSHandler : public SimObject
     // Standard gem5 typedefs
     typedef SrcClockDomain::DomainID DomainID;
     typedef SrcClockDomain::PerfLevel PerfLevel;
+    double sensitivity[40];
 
     /**
      * startup()
@@ -57,6 +58,7 @@ class GpuDVFSHandler : public SimObject
 
     // Main event wrapper for the decision loop
     EventFunctionWrapper decisionEvent;
+
     
     // ----------------------------------------------------------------------
     // Core Logic Functions
@@ -81,6 +83,8 @@ class GpuDVFSHandler : public SimObject
     std::map<Addr, int> scanGlobalWavefrontState(); 
 
     int checkIfGPUIsRunning();
+    int computeUnitSensitivity();
+    int dumpImportantStatsToConsole();
 
     /**
      * findDomain()

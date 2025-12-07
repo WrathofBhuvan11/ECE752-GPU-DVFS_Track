@@ -113,6 +113,69 @@ int GpuDVFSHandler::checkIfGPUIsRunning()
     return 0;
 }
 
+
+int GpuDVFSHandler::computeUnitSensitivity()
+{
+    static double prevInstrExecuted[40] = {0};
+    // Iterate over ALL Compute Units
+    int index = 0;
+    for (auto *cu : gpuShader->cuList) {
+        // Iterate over ALL SIMDs
+        double ipc = cu->stats.ipc.total();
+        if(!std::isnan(ipc) && ipc > 0){
+            double instr = cu->stats.numInstrExecuted.total();
+            double newInstr = instr - prevInstrExecuted[index];
+            if(newInstr < 0) newInstr = instr;
+            sensitivity[index] = newInstr / (cu->frequency()/1000000000);
+            //inform("GPU_DVFS: CU %d inst: %d, recent: %d, freq: %d, sensitivity is %f", index, instr, newInstr, cu->frequency(), sensitivity[index]);
+            prevInstrExecuted[index] = instr;
+        }
+        index++;
+    }
+    return 0;
+}
+
+
+int GpuDVFSHandler::dumpImportantStatsToConsole()
+{
+    static double prevInstTotal[40] = {0};
+    static double prevNumCycles[40] = {0};
+    // Iterate over ALL Compute Units
+    int index = 0;
+    for (auto *cu : gpuShader->cuList) {
+        // Iterate over ALL SIMDs
+        double ipc = cu->stats.ipc.total();
+        if(!std::isnan(ipc) && ipc > 0){
+            double instr = cu->stats.numInstrExecuted.total();
+            double deltaInstr = instr - prevInstTotal[index];
+            double numCycles = cu->stats.totalCycles.total();
+            double deltaNumCycles = numCycles - prevNumCycles[index];
+            if(deltaInstr < 0) deltaInstr = instr;
+            if(deltaNumCycles < 0) deltaNumCycles = numCycles;
+            double deltaIPC = deltaInstr / deltaNumCycles;
+
+            inform("GPU_DVFS_STATS: CU: %d, clock: %d, Cycles: %d, IPC: %f, IPC_delta: %f, CPI: %f, CPI_delta: %f, Frequency: %d, Voltage: %f, EDP: %f, ED2P: %f, Sensitivity: %f"
+               , index
+               , curTick()
+               , cu->stats.totalCycles.total()
+               , cu->stats.ipc.total()
+               , deltaIPC
+               , (cu->stats.ipc.total() > 0) ? (1.0 / cu->stats.ipc.total()) : 0
+               , (deltaIPC > 0) ? (1.0 / deltaIPC) : 0
+               , cu->frequency()
+               , cu->voltage()
+               , cu->voltage() * cu->frequency() * deltaIPC
+               , cu->voltage() * cu->frequency() * deltaIPC * deltaIPC
+               , sensitivity[index]
+            );
+            prevInstTotal[index] = instr;
+            prevNumCycles[index] = numCycles;
+        }
+        index++;
+    }
+    return 0;
+}
+
 // ----------------------------------------------------------------------
 // THE PCSTALL GOVERNOR LOGIC (Decision Phase)
 // ----------------------------------------------------------------------
@@ -138,6 +201,7 @@ void GpuDVFSHandler::runDecisionLoop()
         // Reset heartbeat logic once running
         idleHeartbeat = 0;
         if(!hasPrintedRunning){
+           statistics::reset();
            inform("GPU_DVFS: GPU KERNEL DETECTED! DVFS Active.");
            hasPrintedRunning = true;
         }
@@ -147,6 +211,8 @@ void GpuDVFSHandler::runDecisionLoop()
         inform("GPU_DVFS ERROR: No domains registered!");
         return;
     }
+    computeUnitSensitivity();
+    dumpImportantStatsToConsole();
 
     // Grab the first available domain (since we only have one GPU domain)
     auto it = domains.begin();
@@ -157,7 +223,7 @@ void GpuDVFSHandler::runDecisionLoop()
     std::map<Addr, int> pcMap = scanGlobalWavefrontState();
 
     // Poll period: 10us (10,000,000 ticks) when active
-    Tick nextPollTick = 10000000;
+    Tick nextPollTick = 1000000;
 
     // Case 1: GPU is IDLE (Map is empty)
     if (pcMap.empty()) {
@@ -225,8 +291,8 @@ void GpuDVFSHandler::runDecisionLoop()
 void GpuDVFSHandler::UpdateEvent::updatePerfLevel()
 {
     // This dumping is what creates the multiple blocks in stats.txt
-    statistics::dump();
-    statistics::reset();
+    //statistics::dump();
+    //statistics::reset();
 
     auto d = handler->findDomain(domainIDToSet);
     d->perfLevel(perfLevelToSet);
