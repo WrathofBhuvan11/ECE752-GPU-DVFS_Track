@@ -96,11 +96,34 @@ void DVFSHandler::runDecisionLoop()
     // --- 1. YOUR CUSTOM LOGIC HERE ---
     // Example: "If it's Tuesday, go faster"
     // In reality: Check utilization, temperature, etc.
+   
+    //----------Adding switch handle for domain: to avoid false panic------------------
+    if (domains.empty()) {
+        // No domains to control, just reschedule and return
+        if (curTick() >= 9000000000000)
+            schedule(decisionEvent, curTick() + 1000000000);
+        else
+            schedule(decisionEvent, curTick() + 1000000000000);
+        return;
+    }
+
+    // --- USE FIRST AVAILABLE DOMAIN instead of hardcoded ID 1 ---
+    auto it = domains.begin();
+    DomainID targetDomain = it->first;  // Use whatever domain is registered
     
-    DomainID targetDomain = 1; // The ID of your CPU domain
+    // Extra safety: validate domain exists
+    if (domains.find(targetDomain) == domains.end()) {
+        warn("DVFS: Target domain %d not found, skipping decision loop\n", targetDomain);
+        schedule(decisionEvent, curTick() + 1000000000000);
+        return;
+    }
+
+    //---------------------------------------------------------------------------------
+
+    //DomainID targetDomain = 1; // The ID of your CPU domain
     PerfLevel currentLevel = findDomain(targetDomain)->perfLevel();
-    PerfLevel desiredLevel = currentLevel;
     
+    PerfLevel desiredLevel = currentLevel;
     // Trivial Example Logic: Toggle between Level 0 and Level 1
     if (curTick() >= 9000000000000){
         if (desiredLevel == 0) {
