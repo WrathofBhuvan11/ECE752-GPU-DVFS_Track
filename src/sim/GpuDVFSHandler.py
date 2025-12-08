@@ -10,6 +10,10 @@ class GpuDVFSHandler(SimObject):
     domains = VectorParam.SrcClockDomain([], "List of domains to control")
     sys_clk_domain = Param.SrcClockDomain("System clock domain")
     enable = Param.Bool(False, "Enable/Disable the handler")
+
+    threshold1 = Param.Float(250, "Sensitivity Threshold to tranistion to High Perf")
+    threshold2 = Param.Float(50, "Sensitivity Threshold to tranistion to Medium Perf")
+    printToScreen = Param.Bool(False, "Print DVFS stats to console")
     
     # The transition latency depends on how much time the PLLs and voltage
     # regualators takes to migrate from current levels to the new level, is

@@ -19,6 +19,9 @@ GpuDVFSHandler::GpuDVFSHandler(const Params &p)
       sysClkDomain(p.sys_clk_domain),
       enableHandler(p.enable),
       _transLatency(p.transition_latency),
+      threshold1(p.threshold1),
+      threshold2(p.threshold2),
+      printToScreen(p.printToScreen),
       // Cast the generic SimObject pointer from Python to a Shader pointer
       gpuShader(dynamic_cast<Shader*>(p.shader)),
       // Initialize the decisionEvent to call 'runDecisionLoop' when triggered
@@ -124,9 +127,11 @@ int GpuDVFSHandler::computeUnitSensitivity()
         double ipc = cu->stats.ipc.total();
         if(!std::isnan(ipc) && ipc > 0){
             double instr = cu->stats.numInstrExecuted.total();
-            double newInstr = instr - prevInstrExecuted[index];
-            if(newInstr < 0) newInstr = instr;
-            sensitivity[index] = newInstr / (cu->frequency()/1000000000);
+            double deltaInstr = instr - prevInstrExecuted[index];
+            if(deltaInstr < 0) deltaInstr = instr;
+            sensitivity[index] = deltaInstr / (cu->frequency()/1000000000);
+            //sensitivity[index] = cu->frequency() / newInstr;
+            
             //inform("GPU_DVFS: CU %d inst: %d, recent: %d, freq: %d, sensitivity is %f", index, instr, newInstr, cu->frequency(), sensitivity[index]);
             prevInstrExecuted[index] = instr;
         }
@@ -154,8 +159,9 @@ int GpuDVFSHandler::dumpImportantStatsToConsole()
             if(deltaNumCycles < 0) deltaNumCycles = numCycles;
             double deltaIPC = deltaInstr / deltaNumCycles;
 
-            inform("GPU_DVFS_STATS: CU: %d, clock: %d, Cycles: %d, IPC: %f, IPC_delta: %f, CPI: %f, CPI_delta: %f, Frequency: %d, Voltage: %f, EDP: %f, ED2P: %f, Sensitivity: %f"
+            inform("GPU_DVFS_STATS: CU: %d, perfLevel: %d clock: %d, Cycles: %d, IPC: %f, IPC_delta: %f, CPI: %f, CPI_delta: %f, Frequency: %d, Voltage: %f, EDP: %f, ED2P: %f, Sensitivity: %f"
                , index
+               , domains.begin()->second->perfLevel()
                , curTick()
                , cu->stats.totalCycles.total()
                , cu->stats.ipc.total()
@@ -174,6 +180,19 @@ int GpuDVFSHandler::dumpImportantStatsToConsole()
         index++;
     }
     return 0;
+}
+
+double  GpuDVFSHandler::sensitivityAverage(){
+    double total = 0.0;
+    int count = 0;
+    for(int i = 0; i < 40; i++){
+        if(sensitivity[i] > 0){
+            total += sensitivity[i];
+            count++;
+        }
+    }
+    if(count == 0) return 0.0;
+    return total / count;
 }
 
 // ----------------------------------------------------------------------
@@ -212,7 +231,10 @@ void GpuDVFSHandler::runDecisionLoop()
         return;
     }
     computeUnitSensitivity();
-    dumpImportantStatsToConsole();
+    double average = sensitivityAverage();
+    inform("GPU_DVFS: Average CU Sensitivity: %f", average);
+    if(printToScreen)
+        dumpImportantStatsToConsole();
 
     // Grab the first available domain (since we only have one GPU domain)
     auto it = domains.begin();
@@ -223,7 +245,7 @@ void GpuDVFSHandler::runDecisionLoop()
     std::map<Addr, int> pcMap = scanGlobalWavefrontState();
 
     // Poll period: 10us (10,000,000 ticks) when active
-    Tick nextPollTick = 1000000;
+    Tick nextPollTick = 100000;
 
     // Case 1: GPU is IDLE (Map is empty)
     if (pcMap.empty()) {
@@ -261,11 +283,23 @@ void GpuDVFSHandler::runDecisionLoop()
 
     // > 50% Concentration -> STALL -> Low Freq (Level 2)
     // < 50% Concentration -> COMPUTE -> High Freq (Level 0)
-    if (concentration > 0.5) {
-        desiredLevel = 2; // Low Perf
-    } else {
+    //if (concentration > 0.66) {
+    //    desiredLevel = 2; // Low Perf
+    //}else if (concentration > 0.33) {
+    //    desiredLevel = 1; // Med Perf
+    //} 
+    //else {
+    //    desiredLevel = 0; // Max Perf
+    //}
+    desiredLevel = 0;
+   /*if (average > threshold1) {
         desiredLevel = 0; // Max Perf
-    }
+    } else if(average > threshold2){
+        desiredLevel = 1; // Med Perf
+    }else {
+        desiredLevel = 2; // Low Perf
+    }*/
+
 
     // 4. ACTUATION PHASE
     if (desiredLevel != currentLevel) {

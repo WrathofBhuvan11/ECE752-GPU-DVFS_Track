@@ -50,6 +50,9 @@ class GpuDVFSHandler : public SimObject
     
     SrcClockDomain *sysClkDomain;
     bool enableHandler;
+    double threshold1;
+    double threshold2;
+    bool printToScreen;
     Tick _transLatency;
 
     // Pointer to the real GPU hardware

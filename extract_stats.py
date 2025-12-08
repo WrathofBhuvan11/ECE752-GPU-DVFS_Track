@@ -1,77 +1,67 @@
-import argparse
-import pandas as pd
+import re
+import csv
 import sys
-import os
 
-def parse_gem5_stats(file_path, output_csv_path):
-    data = []
+def extract_stats(input_file, output_file):
+    # Regex to identify the relevant lines
+    line_pattern = re.compile(r"GPU_DVFS_STATS:\s+(.*)")
     
-    if not os.path.exists(file_path):
-        print(f"Error: Input file '{file_path}' not found.")
-        sys.exit(1)
-        
-    print(f"Processing file: {file_path}...")
-    
+    # Regex to find key-value pairs
+    kv_pattern = re.compile(r"(\w+):\s*([-\d\.e\+nan]+)")
+
+    data_rows = []
+    headers = set()
+
+    print(f"Processing {input_file}...")
+
     try:
-        with open(file_path, 'r') as f:
-            for line in f:
-                # Look for the specific marker in the log lines
-                if "GPU_DVFS_STATS:" in line:
-                    try:
-                        # Extract the part after the marker
-                        # Example line: ... info: GPU_DVFS_STATS: CU: 39, clock: ...
-                        content = line.split("GPU_DVFS_STATS:")[1].strip()
-                        
-                        # Split by comma to get fields
-                        parts = content.split(', ')
-                        
-                        row = {}
-                        for part in parts:
-                            if ':' in part:
-                                key, val = part.split(': ')
-                                row[key.strip()] = val.strip()
-                        
-                        if row:
-                            data.append(row)
-                    except IndexError:
-                        continue # Skip malformed lines
-    except Exception as e:
-        print(f"An error occurred while reading the file: {e}")
-        sys.exit(1)
+        with open(input_file, 'r') as f_in:
+            for line in f_in:
+                match = line_pattern.search(line)
+                if match:
+                    content_str = match.group(1)
+                    pairs = kv_pattern.findall(content_str)
+                    
+                    if pairs:
+                        row_dict = {}
+                        for key, value in pairs:
+                            row_dict[key] = value
+                            headers.add(key)
+                        data_rows.append(row_dict)
 
-    if not data:
-        print("No 'GPU_DVFS_STATS' lines found in the file.")
-        return
+        if not data_rows:
+            print("Warning: No 'GPU_DVFS_STATS' lines found.")
+            return
 
-    df = pd.DataFrame(data)
-    
-    # Convert columns to numeric, automatically handling '-nan'
-    for col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    # Sort by CU and then by clock so consecutive dumps appear vertically for each CU
-    if 'CU' in df.columns and 'clock' in df.columns:
-        df = df.sort_values(by=['CU', 'clock'])
-    
-    # Save to CSV
-    try:
-        df.to_csv(output_csv_path, index=False)
-        print(f"Successfully saved parsed stats to: {output_csv_path}")
+        # --- NEW: SORTING LOGIC ---
+        # Sort by 'CU' column numerically.
+        # We use a helper lambda to convert the CU string to an int.
+        # If 'CU' is missing for some reason, it defaults to -1.
+        data_rows.sort(key=lambda x: int(x.get('CU', -1)))
+        # --------------------------
+
+        # Organize headers (CU first, then others)
+        sorted_headers = sorted(list(headers))
+        priority_cols = ['CU', 'perfLevel', 'clock', 'Cycles', 'IPC']
+        for col in reversed(priority_cols):
+            if col in sorted_headers:
+                sorted_headers.insert(0, sorted_headers.pop(sorted_headers.index(col)))
+
+        # Write to CSV
+        with open(output_file, 'w', newline='') as f_out:
+            writer = csv.DictWriter(f_out, fieldnames=sorted_headers)
+            writer.writeheader()
+            writer.writerows(data_rows)
+            
+        print(f"Successfully extracted and sorted {len(data_rows)} rows to {output_file}")
+
+    except FileNotFoundError:
+        print(f"Error: The file '{input_file}' was not found.")
     except Exception as e:
-        print(f"Error writing to output file: {e}")
+        print(f"An unexpected error occurred: {e}")
 
 if __name__ == "__main__":
-    # Initialize argument parser
-    parser = argparse.ArgumentParser(
-        description="Extract GPU DVFS stats from a gem5 log file into a CSV."
-    )
-    
-    # Add arguments for input and output files
-    parser.add_argument("input_file", help="Path to the gem5 stats text file (input)")
-    parser.add_argument("output_file", help="Path where the CSV file will be saved (output)")
-    
-    # Parse arguments
-    args = parser.parse_args()
-    
-    # Run the function
-    parse_gem5_stats(args.input_file, args.output_file)
+    if len(sys.argv) < 3:
+        print("Usage: python3 extract_stats_sorted.py <input_txt_file> <output_csv_file>")
+    else:
+        extract_stats(sys.argv[1], sys.argv[2])

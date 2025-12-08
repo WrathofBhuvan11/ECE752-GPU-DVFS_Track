@@ -123,6 +123,14 @@ def runMI300GPUFS(
 
     parser.add_argument("--enable-gpu-dvfs", action="store_true", default=False, \
         help="Enable the specialized Toy GPU DVFS Handler (Cyclical 3-Level)")
+    
+    parser.add_argument("--threshold1", default=250, \
+        help="Upper Sensitivity Threshold to tranistion to High Perf (default: 250)")
+    parser.add_argument("--threshold2", default=50, \
+        help="Middle Sensitivity Threshold to tranistion to Med Perf (default: 50)")
+    parser.add_argument("--printToScreen", action="store_true", default=False, \
+        help="Print Important DVFS Stats to Console")
+
 
     # Parse now so we can override options
     args = parser.parse_args()

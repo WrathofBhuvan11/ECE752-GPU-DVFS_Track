@@ -137,7 +137,10 @@ def makeGpuFSSystem(args):
             sys_clk_domain=system.clk_domain, # Reference system clock
             enable=True,
             transition_latency="100us", # Latency for switching freq
-            shader=shader # Pointer to GPU for PC sampling
+            shader=shader, # Pointer to GPU for PC sampling
+            threshold1=args.threshold1,
+            threshold2=args.threshold2,
+            printToScreen=args.printToScreen
         )
     # ---------------------------------------------
     connectGPU(system, args)

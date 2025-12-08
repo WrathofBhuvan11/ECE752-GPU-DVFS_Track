@@ -56,6 +56,10 @@ class GpuDVFSHandler : public SimObject
     // Pointer to the real GPU hardware
     Shader *gpuShader;
 
+    double threshold1;
+    double threshold2;
+    bool printToScreen;
+
     // Main event wrapper for the decision loop
     EventFunctionWrapper decisionEvent;
 
@@ -85,6 +89,7 @@ class GpuDVFSHandler : public SimObject
     int checkIfGPUIsRunning();
     int computeUnitSensitivity();
     int dumpImportantStatsToConsole();
+    double sensitivityAverage();
 
     /**
      * findDomain()

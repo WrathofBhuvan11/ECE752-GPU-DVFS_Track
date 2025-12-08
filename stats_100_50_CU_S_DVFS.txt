@@ -1,0 +1,26 @@
+warn: Physical memory size specified is 8GiB which is greater than 3GiB.  Twice the number of memory controllers would be created.
+Global frequency set at 1000000000000 ticks per second
+warn: system.workload.acpi_description_table_pointer.rsdt adopting orphan SimObject param 'entries'
+KeyboardInterrupt: <EMPTY MESSAGE>
+
+At:
+  src/python/m5/SimObject.py(872): __setattr__
+  src/python/m5/proxy.py(127): unproxy
+  src/python/m5/SimObject.py(1121): unproxyParams
+  src/python/m5/simulate.py(104): instantiate
+  /home/theo/gem5/configs/example/gpufs/runfs.py(268): runGpuFSSystem
+  configs/example/gpufs/mi300.py(184): runMI300GPUFS
+  configs/example/gpufs/mi300.py(188): <module>
+  src/python/m5/main.py(682): main
+gem5 Simulator System.  https://www.gem5.org
+gem5 is copyrighted software; use the --copyright option for details.
+
+gem5 version 25.0.0.1
+gem5 compiled Dec  7 2025 18:00:16
+gem5 started Dec  7 2025 20:02:16
+gem5 executing on theo-Ubuntu, pid 343677
+command line: build/VEGA_X86/gem5.opt configs/example/gpufs/mi300.py --app gem5-resources/src/gpu/square/bin.default/square.default --kernel gem5-resources/src/x86-ubuntu-gpu-ml/vmlinux-gpu-ml --disk-image /media/theo/Resources/x86-ubuntu-gpu-ml/disk-image/x86-ubuntu-gpu-ml --enable-gpu-dvfs --threshold1=200 --threshold2=100 --printToScreen
+
+INFO: Enabling GpuDVFSHandler with 3-level PCSTALL logic.
+PYTHON: GpuDVFSHandler instantiated in configuration!
+Error in unproxying param 'eventq_index' of system.Shader.CUs23.register_manager.srf_pool_managers1
