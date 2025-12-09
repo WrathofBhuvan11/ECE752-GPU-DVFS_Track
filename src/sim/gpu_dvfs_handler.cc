@@ -100,20 +100,26 @@ std::map<Addr, int> GpuDVFSHandler::scanGlobalWavefrontState()
 // ----------------------------------------------------------------------
 int GpuDVFSHandler::checkIfGPUIsRunning()
 {
+    static int detected = 0;
     //chaanged use of IPC stats to Check physical wavefront status directly.
     if (!gpuShader) return 0;
 
-    for (auto *cu : gpuShader->cuList) {
-        for (const auto &simd_waves : cu->wfList) {
-            for (auto *wave : simd_waves) {
-                // If any wave is NOT stopped, the GPU is running
-                if (wave->getStatus() != Wavefront::S_STOPPED) {
-                    return 1;
+    if(!detected){
+        for (auto *cu : gpuShader->cuList) {
+            for (const auto &simd_waves : cu->wfList) {
+                for (auto *wave : simd_waves) {
+                    // If any wave is NOT stopped, the GPU is running
+                    double ipc = cu->stats.ipc.total();
+                    if(!std::isnan(ipc) && ipc > 0){
+                    //if (wave->getStatus() != Wavefront::S_STOPPED) {
+                        detected = 1;
+                    //}
+                    }
                 }
             }
         }
     }
-    return 0;
+    return detected;
 }
 
 
@@ -291,7 +297,7 @@ void GpuDVFSHandler::runDecisionLoop()
     //else {
     //    desiredLevel = 0; // Max Perf
     //}
-    desiredLevel = 0;
+    desiredLevel = 2;
    /*if (average > threshold1) {
         desiredLevel = 0; // Max Perf
     } else if(average > threshold2){

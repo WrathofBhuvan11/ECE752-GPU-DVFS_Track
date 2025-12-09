@@ -1,0 +1,20 @@
+warn: Physical memory size specified is 8GiB which is greater than 3GiB.  Twice the number of memory controllers would be created.
+warn: system.workload.acpi_description_table_pointer.rsdt adopting orphan SimObject param 'entries'
+KeyboardInterrupt: <EMPTY MESSAGE>
+
+At:
+  src/python/m5/util/dot_writer.py(221): get_node_type
+  src/python/m5/util/dot_writer.py(276): dot_gen_colour
+  src/python/m5/util/dot_writer.py(182): dot_create_cluster
+  src/python/m5/util/dot_writer.py(99): dot_create_nodes
+  src/python/m5/util/dot_writer.py(111): dot_create_nodes
+  src/python/m5/util/dot_writer.py(111): dot_create_nodes
+  src/python/m5/util/dot_writer.py(111): dot_create_nodes
+  src/python/m5/util/dot_writer.py(111): dot_create_nodes
+  src/python/m5/util/dot_writer.py(111): dot_create_nodes
+  src/python/m5/util/dot_writer.py(380): do_dot
+  src/python/m5/simulate.py(127): instantiate
+  /home/theo/gem5/configs/example/gpufs/runfs.py(268): runGpuFSSystem
+  configs/example/gpufs/mi300.py(184): runMI300GPUFS
+  configs/example/gpufs/mi300.py(188): <module>
+  src/python/m5/main.py(682): main
