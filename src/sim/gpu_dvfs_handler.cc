@@ -140,8 +140,7 @@ int GpuDVFSHandler::dumpImportantStatsToConsole()
             
             // NOTE: Reporting average predicted sensitivity from table roughly here?
             // Since this function loops over CUs, can't show per-PC sensitivity easily.
-            // Theo, I just leave the old "sensitivity[index]" or use 0.0 if that array is gone.
-            // Assuming I removed the old array 'sensitivity', print 0.0 or a placeholder. 
+            // Theo, I just updated this based on summation logic asin the paper. 
             // So if you wanna edit this let me know #TODO
 
             inform("GPU_DVFS_STATS: CU: %d, clock: %d, Cycles: %d, IPC: %f, IPC_delta: %f, CPI: %f, CPI_delta: %f, Frequency: %d, Voltage: %f, EDP: %f, ED2P: %f, Sensitivity: %f"
