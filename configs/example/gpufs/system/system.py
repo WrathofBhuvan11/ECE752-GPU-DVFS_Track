@@ -49,8 +49,6 @@ def makeGpuFSSystem(args):
         "lpj=7999923",
         f"root={args.root_partition}",
         "drm_kms_helper.fbdev_emulation=0"
-        #"modprobe.blacklist=amdgpu",
-        #"modprobe.blacklist=psmouse",
     ]
     cmdline = " ".join(boot_options)
 
@@ -126,19 +124,21 @@ def makeGpuFSSystem(args):
     # Create AMDGPU and attach to southbridge
     shader = createGPU(system, args)
     
-    # --- ASSIGN GPU DOMAIN & HANDLER ---
-    # Explicitly set the GPU (Shader) to use our custom DVFS domain
+    # ASSIGN GPU DOMAIN & HANDLER
+    # Explicitly set the GPU (Shader) to use custom DVFS domain
     shader.clk_domain = system.gpu_clk_domain
 
     if args.enable_gpu_dvfs:
-        print("INFO: Enabling GpuDVFSHandler with 3-level PCSTALL logic.")
+        print("INFO: Enabling GpuDVFSHandler with 3-level PCSTALL logic....")
         system.gpu_dvfs_handler = GpuDVFSHandler(
             domains=[system.gpu_clk_domain], # The domain to control
             sys_clk_domain=system.clk_domain, # Reference system clock
             enable=True,
-            transition_latency="100us", # Latency for switching freq
+            transition_latency="10us", # Latency for switching freq
             shader=shader # Pointer to GPU for PC sampling
         )
+    else :
+        print("INFO: DVFS for GPU is disabled...")
     # ---------------------------------------------
     connectGPU(system, args)
 
