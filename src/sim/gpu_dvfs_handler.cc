@@ -7,6 +7,7 @@
 #include "gpu-compute/shader.hh"
 #include "gpu-compute/compute_unit.hh"
 #include <cmath>
+#include "sim/core.hh" // For sim_clock::Frequency
 
 namespace gem5
 {
@@ -20,7 +21,8 @@ GpuDVFSHandler::GpuDVFSHandler(const Params &p)
       enableHandler(p.enable),
       _transLatency(p.transition_latency),
       // Cast the generic SimObject pointer from Python to a Shader pointer
-      gpuShader(dynamic_cast<Shader*>(p.shader)),
+      gpuShader(dynamic_cast<Shader *>(p.shader)),
+      nextPollTick(p.polling_interval), // Load from python- sampling/polling rate
       // Initialize the decisionEvent to call 'runDecisionLoop' when triggered
       decisionEvent([this]{ runDecisionLoop(); }, name())
 {
@@ -28,6 +30,7 @@ GpuDVFSHandler::GpuDVFSHandler(const Params &p)
     for (auto *d : p.domains) {
         domains[d->domainID()] = d;
     }
+
     // DEBUG PRINT 1: Constructor
     inform("GPU_DVFS: Handler Created. controlling %d domains.", domains.size());
 }
@@ -39,8 +42,19 @@ void GpuDVFSHandler::startup()
 {
     // DEBUG PRINT 2: Startup
     inform("GPU_DVFS: Startup called.");
-
+    
     if (enableHandler) {
+        // Initialize PCSTALL Table
+        inform("GPU_DVFS: Enabled! Initializing PCSTALL Predictor Table...");
+        // Default to 100.0 (High Sensitivity / Compute Bound) so to start at Max Freq
+        for(int i = 0; i < 128; i++) {
+            sensitivityTable[i] = 100.0;
+        }
+        
+        // Clear history structures
+        wavefrontLastPC.clear();
+        lastCuInstCount.clear();
+
         // Wait 5ms for OS boot before first poll
         inform("GPU_DVFS: Enabled! Scheduling first check in 5ms.");
         schedule(decisionEvent, curTick() + 5000000000); 
@@ -61,45 +75,13 @@ GpuDVFSHandler::findDomain(DomainID domain_id) const
 }
 
 // ----------------------------------------------------------------------
-// GLOBAL WAVEFRONT SCANNER (Data Collection Phase)
-// ----------------------------------------------------------------------
-std::map<Addr, int> GpuDVFSHandler::scanGlobalWavefrontState()
-{
-    std::map<Addr, int> pcHistogram;
-
-    if (!gpuShader) {
-        inform("GPU_DVFS ERROR: gpuShader pointer is NULL!");
-        return pcHistogram;
-    }
-
-    int totalWavesSeen = 0;
-
-    // Iterate over ALL Compute Units
-    for (auto *cu : gpuShader->cuList) {
-        // Iterate over ALL SIMDs
-        for (const auto &simd_waves : cu->wfList) {
-            // Iterate over ALL Wavefronts
-            for (auto *wave : simd_waves) {
-                totalWavesSeen++; 
-                if (wave->getStatus() != Wavefront::S_STOPPED) {
-                    // Add to histogram: This counts how many waves are at this specific PC
-                    pcHistogram[wave->pc()]++;
-                }
-            }
-        }
-    }
-
-    return pcHistogram;
-}
-
-// ----------------------------------------------------------------------
-// CHECK IF GPU IS RUNNING 
+// CHECK IF GPU IS RUNNING
 // ----------------------------------------------------------------------
 int GpuDVFSHandler::checkIfGPUIsRunning()
 {
     //chaanged use of IPC stats to Check physical wavefront status directly.
     if (!gpuShader) return 0;
-
+    
     for (auto *cu : gpuShader->cuList) {
         for (const auto &simd_waves : cu->wfList) {
             for (auto *wave : simd_waves) {
@@ -113,46 +95,54 @@ int GpuDVFSHandler::checkIfGPUIsRunning()
     return 0;
 }
 
-
-int GpuDVFSHandler::computeUnitSensitivity()
-{
-    static double prevInstrExecuted[40] = {0};
-    // Iterate over ALL Compute Units
-    int index = 0;
-    for (auto *cu : gpuShader->cuList) {
-        // Iterate over ALL SIMDs
-        double ipc = cu->stats.ipc.total();
-        if(!std::isnan(ipc) && ipc > 0){
-            double instr = cu->stats.numInstrExecuted.total();
-            double newInstr = instr - prevInstrExecuted[index];
-            if(newInstr < 0) newInstr = instr;
-            sensitivity[index] = newInstr / (cu->frequency()/1000000000);
-            //inform("GPU_DVFS: CU %d inst: %d, recent: %d, freq: %d, sensitivity is %f", index, instr, newInstr, cu->frequency(), sensitivity[index]);
-            prevInstrExecuted[index] = instr;
-        }
-        index++;
-    }
-    return 0;
-}
-
-
+// ----------------------------------------------------------------------
+// STATS DUMP FUNCTION 
+// ----------------------------------------------------------------------
 int GpuDVFSHandler::dumpImportantStatsToConsole()
 {
     static double prevInstTotal[40] = {0};
     static double prevNumCycles[40] = {0};
+    
     // Iterate over ALL Compute Units
     int index = 0;
     for (auto *cu : gpuShader->cuList) {
-        // Iterate over ALL SIMDs
         double ipc = cu->stats.ipc.total();
+        
         if(!std::isnan(ipc) && ipc > 0){
             double instr = cu->stats.numInstrExecuted.total();
             double deltaInstr = instr - prevInstTotal[index];
+            
             double numCycles = cu->stats.totalCycles.total();
             double deltaNumCycles = numCycles - prevNumCycles[index];
+            
             if(deltaInstr < 0) deltaInstr = instr;
             if(deltaNumCycles < 0) deltaNumCycles = numCycles;
+            
             double deltaIPC = deltaInstr / deltaNumCycles;
+            
+            double voltage = cu->voltage();
+            double freq = (double)cu->frequency();
+            
+            // Avoid division by zero
+            double performance = freq * deltaIPC;
+            double edp = 0.0;
+            double ed2p = 0.0;
+            if (performance > 0) {
+                edp = (voltage * voltage) / performance;
+                ed2p = (voltage * voltage) / (performance * performance);
+            }
+
+            // RETRIEVE SENSITIVITY (Handle case where map is empty initially)
+            double printSens = 0.0;
+            if (currentCuSensitivity.find(cu) != currentCuSensitivity.end()) {
+                printSens = currentCuSensitivity[cu];
+            }
+            
+            // NOTE: Reporting average predicted sensitivity from table roughly here?
+            // Since this function loops over CUs, can't show per-PC sensitivity easily.
+            // Theo, I just leave the old "sensitivity[index]" or use 0.0 if that array is gone.
+            // Assuming I removed the old array 'sensitivity', print 0.0 or a placeholder. 
+            // So if you wanna edit this let me know #TODO
 
             inform("GPU_DVFS_STATS: CU: %d, clock: %d, Cycles: %d, IPC: %f, IPC_delta: %f, CPI: %f, CPI_delta: %f, Frequency: %d, Voltage: %f, EDP: %f, ED2P: %f, Sensitivity: %f"
                , index
@@ -162,12 +152,13 @@ int GpuDVFSHandler::dumpImportantStatsToConsole()
                , deltaIPC
                , (cu->stats.ipc.total() > 0) ? (1.0 / cu->stats.ipc.total()) : 0
                , (deltaIPC > 0) ? (1.0 / deltaIPC) : 0
-               , cu->frequency()
-               , cu->voltage()
-               , cu->voltage() * cu->frequency() * deltaIPC
-               , cu->voltage() * cu->frequency() * deltaIPC * deltaIPC
-               , sensitivity[index]
+               , freq 
+               , voltage
+               , edp 
+               , ed2p
+               , printSens//add sensivity here 
             );
+            
             prevInstTotal[index] = instr;
             prevNumCycles[index] = numCycles;
         }
@@ -176,114 +167,206 @@ int GpuDVFSHandler::dumpImportantStatsToConsole()
     return 0;
 }
 
-// ----------------------------------------------------------------------
-// THE PCSTALL GOVERNOR LOGIC (Decision Phase)
-// ----------------------------------------------------------------------
+
+/// ------------------------------------------------------------------
+/// IMPLEMENTATION Of Decision Policy for PCStall 
+/// ------------------------------------------------------------------
 void GpuDVFSHandler::runDecisionLoop()
 {
-    static bool hasPrintedRunning = false;
+    // ------------------------------------------------------------------
+    // 1. STATUS CHECK and DEFINE FREQUENCY
+    // ------------------------------------------------------------------
     static int idleHeartbeat = 0;
-
     int isRunning = checkIfGPUIsRunning();
-
-    if(!isRunning) {
-        // Print a heartbeat every 10,000 checks so we know sim isn't frozen
-        if (++idleHeartbeat % 10000 == 0) {
-           inform("GPU_DVFS: Waiting for GPU kernel... (Check #%d)", idleHeartbeat);
-        }
-
-        // Relax polling to 100us (100,000,000 ticks) to reduce overhead
-        // while the OS is booting or app is initializing.
-        schedule(decisionEvent, curTick() + 100000000);
-        return;
-    }
-    else {
-        // Reset heartbeat logic once running
-        idleHeartbeat = 0;
-        if(!hasPrintedRunning){
-           statistics::reset();
-           inform("GPU_DVFS: GPU KERNEL DETECTED! DVFS Active.");
-           hasPrintedRunning = true;
-        }
-    }
-
+    
+    // assume a single DVFS domain for simplicity. 
+    // If there are multiple, one would map CUs to Domains and repeat this logic per Domain.
     if (domains.empty()) {
-        inform("GPU_DVFS ERROR: No domains registered!");
+        inform("GPU_DVFS ERROR: No domains registered in Handler!");
         return;
     }
-    computeUnitSensitivity();
-    dumpImportantStatsToConsole();
 
-    // Grab the first available domain (since we only have one GPU domain)
     auto it = domains.begin();
     SrcClockDomain *domain = it->second;
-    DomainID targetDomain = it->first; 
+    
+    // Get Current Frequency (Normalized to MHz for readable math)
+    // gem5 returns frequency in Hz (for example 1,000,000,000 for 1GHz)
+    // Frequency (Hz) = sim_clock::Frequency / period
+    double currentFreqHz = (double)sim_clock::Frequency / (double)domain->clockPeriod();
+    
+    // Convert to MHz for your sensitivity math
+    double currentFreqMHz = currentFreqHz / 1000000.0;
+    
+    // Protect against startup edge cases (period=0)
+    if (currentFreqMHz <= 0.0) currentFreqMHz = 1000.0; 
 
-    // 1. GATHER PHASE
-    std::map<Addr, int> pcMap = scanGlobalWavefrontState();
-
-    // Poll period: 10us (10,000,000 ticks) when active
-    Tick nextPollTick = 1000000;
-
-    // Case 1: GPU is IDLE (Map is empty)
-    if (pcMap.empty()) {
-        // GPU became idle mid-execution
-        schedule(decisionEvent, curTick() + nextPollTick);
+    if (!isRunning) {
+        // GPU is idle. Slow down polling to save simulation overhead.
+        if (++idleHeartbeat % 1000 == 0) {
+           // inform("GPU_DVFS: GPU Idle... heartbeat %d", idleHeartbeat);
+        }
+        // Poll again later (10x slower) or standard interval
+        schedule(decisionEvent, curTick() + (nextPollTick * 10));
         return;
     }
+    
+    // Reset heartbeat if it is running
+    idleHeartbeat = 0;
 
+    // ------------------------------------------------------------------
+    // 2. PRE-LOOP SETUP
+    // ------------------------------------------------------------------
+    // Dump stats from the previous epoch before overwriting the metrics
+    dumpImportantStatsToConsole();
 
-    // 2. ANALYZE PHASE: Calculate PC Concentration
-    int maxWavesAtOnePC = 0;
-    int totalActiveWaves = 0;
-    Addr dominantPC = 0;
+    // Reset Aggregation Metrics for this new epoch
+    currentCuSensitivity.clear();
+    currentDomainSensitivity = 0.0;
+    
+    double totalPredictedSensitivity = 0.0;
+    int activeWaves = 0;
 
-    for (auto const& [pc, count] : pcMap) {
-        totalActiveWaves += count;
-        if (count > maxWavesAtOnePC) {
-            maxWavesAtOnePC = count;
-            dominantPC = pc;
+    // ------------------------------------------------------------------
+    // 3. MAIN LOOP: Iterate CUs -> Wavefronts
+    // ------------------------------------------------------------------
+    for (auto *cu : gpuShader->cuList) {
+        double cuMeasuredSens = 0.0; // Sum of actual work done (for debug/stats)
+        double cuPredictedSens = 0.0; // Sum of predicted future work
+
+        // Two stage loop for CUs and WFs
+        // Iterate over all SIMDs (Vector Units) in the CU
+        for (const auto &simd_waves : cu->wfList) {
+            // Iterate over all Wavefronts in the SIMD
+            for (auto *wf : simd_waves) {
+                
+                // PHASE A: MEASURE & TRAIN (Calculate S_WF actual) 
+                // 1. Get current cumulative instruction count
+                // Note: .total() returns the standard gem5 stat value
+                double currentInsts = wf->stats.numInstrExecuted.total();
+                
+                // 2. Retrieve previous count to find Delta
+                double prevInsts = 0.0;
+                if(lastWfInstCount.find(wf) != lastWfInstCount.end()) {
+                    prevInsts = lastWfInstCount[wf];
+                }
+                
+                // 3. Save current count for the NEXT loop
+                lastWfInstCount[wf] = currentInsts;
+
+                // 4. Calculate Delta Instructions
+                double deltaInsts = currentInsts - prevInsts;
+                if (deltaInsts < 0) deltaInsts = 0; // Handle resets/overflows
+                
+                // 5. Normalisation on Frequency
+                // S = Delta Instructions / Current Frequency (MHz)
+                // This gives "Instructions per MHz" (The Slope) Icurr = Iprev + S.f => S = (Icurr-Iprev)/f (slope)
+                double S_wf_measured = deltaInsts / currentFreqMHz;
+               
+                // 6. Update Global Max (Auto-Tuning)
+                if (S_wf_measured > globalMaxSensitivity) {
+                    globalMaxSensitivity = S_wf_measured;
+                }
+
+                // Accumulate measured work for this CU
+                cuMeasuredSens += S_wf_measured;
+
+                // 6. Update the History Table
+                // attribute this performance to the PC where the wave STARTED the epoch.
+                if (wavefrontLastPC.count(wf)) {
+                    Addr prevPC = wavefrontLastPC[wf];
+                    int idx = getIndex(prevPC);
+                    // Exponential Moving Average (Alpha = 0.3)
+                    // New_Value = (Old_Value * (1 - Alpha)) + (Measured * Alpha)
+                    sensitivityTable[idx] = (0.7 * sensitivityTable[idx]) + (0.3 * S_wf_measured);
+                }
+
+                // PHASE B: PREDICT (Lookup S_WF future) 
+                // only predict for active waves. Stopped waves contribute 0 load.
+                if (wf->getStatus() != Wavefront::S_STOPPED) {
+                    Addr currentPC = wf->pc();
+                    
+                    // 1. Save this PC so it can update the table next time
+                    wavefrontLastPC[wf] = currentPC;
+
+                    // 2. Lookup Predicted Sensitivity
+                    int idx = getIndex(currentPC);
+                    double S_wf_predicted = sensitivityTable[idx];
+
+                    // 3. Aggregate
+                    cuPredictedSens += S_wf_predicted;
+                } else {
+                    // If wave is stopped, remove it from history map to save memory/confusion
+                    wavefrontLastPC.erase(wf);
+                }
+            }
+            //  --- END WF Loop ---
         }
+        // --- END CU Loopp ---
+        
+        // Save CU metrics for the stats dump function
+        currentCuSensitivity[cu] = cuPredictedSens;
+        
+        // Aggregate into Domain total
+        totalPredictedSensitivity += cuPredictedSens;
     }
 
-    // "Concentration" metric: 0.0 to 1.0
-    // High Concentration implies waves are synchronized at a bottleneck (Stall).
-    // Low Concentration implies waves are executing freely (Compute).
-    double concentration = 0.0;
-    static double prevConcentration = 0;;
-    if (totalActiveWaves > 0) {
-        concentration = (double)maxWavesAtOnePC / totalActiveWaves;
-    }
+    // Save Domain metrics for stats dump
+    currentDomainSensitivity = totalPredictedSensitivity;
 
-    // 3. DECISION PHASE
+    // ------------------------------------------------------------------
+    // 4. DECISION PHASE (Aggregated S_Domain)
+    // ------------------------------------------------------------------
+    DomainID targetDomain = it->first;
     PerfLevel currentLevel = domain->perfLevel();
     PerfLevel desiredLevel = currentLevel;
-
-    // > 50% Concentration -> STALL -> Low Freq (Level 2)
-    // < 50% Concentration -> COMPUTE -> High Freq (Level 0)
-    if (concentration > 0.5) {
-        desiredLevel = 2; // Low Perf
+    
+    //---------------- Autotuning based decesion making------------------
+    // Decay the max slightly to adapt to phase changes (moving from Compute -> Memory phase)
+    globalMaxSensitivity *= DECAY_FACTOR; 
+    
+    // Ensure it doesn't drop to zero (sanity floor)
+    if (globalMaxSensitivity < 0.1) globalMaxSensitivity = 0.1;
+    
+    // Define Dynamic Thresholds
+    // 33% (1/3) of Max -> Nominal
+    // 66% (2/3) of Max -> Turbo
+    double threshold_med  = globalMaxSensitivity * 0.33;
+    double threshold_high = globalMaxSensitivity * 0.66;
+    
+    // Calculate Average Sensitivity of ACTIVE units
+    double avgSensitivity = (activeWaves > 0) ? (totalPredictedSensitivity / activeWaves) : 0.0;
+    
+    if (avgSensitivity > threshold_high) {
+        desiredLevel = 0; // Max Performance (Highest Freq, Highest Voltage)
+    } else if (avgSensitivity > threshold_med) {
+        desiredLevel = 1; // Medium Performance (if available)
     } else {
-        desiredLevel = 0; // Max Perf
+        desiredLevel = 2; // Low Performance (Lowest Freq, Save Power)
     }
+    //-------------------------------------------------------------------
 
-    // 4. ACTUATION PHASE
+    // ------------------------------------------------------------------
+    // 5. ACTUATION PHASE
+    // ------------------------------------------------------------------
     if (desiredLevel != currentLevel) {
-        inform("GPU_DVFS: Update %d -> %d | ActiveWaves: %d | Concentration: %.2f",
-               currentLevel, desiredLevel, totalActiveWaves, concentration);
+        
+        DPRINTF(GpuDVFS, "Decision: S_Domain=%.2f | Level %d -> %d\n", 
+                totalPredictedSensitivity, currentLevel, desiredLevel);
 
+        // Schedule the update event to account for transition latency if needed
+        // (or execute immediately if latency is modeled inside the clock domain)
         auto *e = new UpdateEvent();
         e->handler = this;
         e->domainIDToSet = targetDomain;
         e->perfLevelToSet = desiredLevel;
-        e->updatePerfLevel();
+        e->updatePerfLevel(); 
     }
 
-    // Schedule next check
+    // ------------------------------------------------------------------
+    // 6. SCHEDULING
+    // ------------------------------------------------------------------
     schedule(decisionEvent, curTick() + nextPollTick);
-    
 }
-
 
 // ----------------------------------------------------------------------
 // Actuation Event
@@ -291,12 +374,12 @@ void GpuDVFSHandler::runDecisionLoop()
 void GpuDVFSHandler::UpdateEvent::updatePerfLevel()
 {
     // This dumping is what creates the multiple blocks in stats.txt
-    //statistics::dump();
-    //statistics::reset();
-
+    // statistics::dump();
+    // statistics::reset();
+    
     auto d = handler->findDomain(domainIDToSet);
-    d->perfLevel(perfLevelToSet);
-} 
+    if (d) d->perfLevel(perfLevelToSet);
+}
 
 } // namespace gem5
 

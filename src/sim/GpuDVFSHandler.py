@@ -6,7 +6,8 @@ class GpuDVFSHandler(SimObject):
     type = 'GpuDVFSHandler'
     cxx_header = "sim/gpu_dvfs_handler.hh"
     cxx_class = "gem5::GpuDVFSHandler"
-
+    #Adding polling intervals for DVFS - default 1us
+    polling_interval = Param.Latency("1us", "Interval between DVFS decisions") 
     domains = VectorParam.SrcClockDomain([], "List of domains to control")
     sys_clk_domain = Param.SrcClockDomain("System clock domain")
     enable = Param.Bool(False, "Enable/Disable the handler")

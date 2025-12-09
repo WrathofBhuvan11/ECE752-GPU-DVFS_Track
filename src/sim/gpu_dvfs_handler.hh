@@ -6,8 +6,9 @@
 #include "sim/clock_domain.hh"
 #include "sim/eventq.hh"
 #include <map>
+#include <vector>
 
-// GPU Headers required to spy on Wavefronts
+// GPU Headers
 #include "gpu-compute/shader.hh"
 #include "gpu-compute/compute_unit.hh"
 #include "gpu-compute/wavefront.hh"
@@ -18,13 +19,13 @@ namespace gem5
 /**
  * GpuDVFSHandler
  * A specialized handler for managing GPU Dynamic Voltage and Frequency Scaling (DVFS).
- * * IMPLEMENTATION STRATEGY: PCStall (Predict, Don't React)
- * --------------------------------------------------------
- * Instead of reacting to past utilization history (which is often too late), 
- * this handler scans the instantaneous state (Program Counter distribution) 
- * of all active wavefronts. 
- * * - High PC Concentration implies synchronization/stalls (Barrier/Memory).
- * - Low PC Concentration implies independent progress (ALU/Throughput).
+ *
+ * IMPLEMENTATION STRATEGY: PCSTALL (Predict, Don't React)
+ * Reference: Bharadwaj et al
+ * PCSTALL is "predictive". It assumes that the "Frequency Sensitivity" (compute-bound vs memory-bound)
+ * of a wavefront is tied to the code it is executing. By tracking the Program Counter (PC),
+ * one can figure which parts of the kernel need high frequency and which are stalled on memory.
+ * -------------------------------------------------------
  */
 class GpuDVFSHandler : public SimObject
 {
@@ -35,7 +36,6 @@ class GpuDVFSHandler : public SimObject
     // Standard gem5 typedefs
     typedef SrcClockDomain::DomainID DomainID;
     typedef SrcClockDomain::PerfLevel PerfLevel;
-    double sensitivity[40];
 
     /**
      * startup()
@@ -45,8 +45,53 @@ class GpuDVFSHandler : public SimObject
     void startup() override;
 
   private:
-    // Container to store pointers to the clock domains
-    typedef std::map<DomainID, SrcClockDomain*> Domains;
+    // --- PCSTALL HARDWARE STRUCTURES ---
+    //---------------------------------------------------------------------------------------------
+
+    // 1. Prediction Table (Hardware Storage)
+    // Concept: A small direct-mapped cache that remembers the "Sensitivity" of code blocks.
+    // - High Sensitivity : Compute-Bound. The code scales with Frequency. (Predict: High Freq)
+    // - Medium Sensitivity : will decide threshold
+    // - Low Sensitivity : Memory-Bound. The code is waiting on RAM. (Predict: Low Freq)
+    // Size: 128 entries is sufficient as GPU kernels loop over small code segments.
+    double sensitivityTable[128];
+
+    // 2. Indexing Logic
+    // Ignore the lowest 4 bits (byte offsets) because instructions execute in blocks.
+    // Mask to 127 to map the PC into our 128-entry table.
+    int getIndex(Addr pc) const { return (pc >> 4) & 127; }
+
+    // 3. History Tracking (For Learning)
+    // To train the table,to know: "Where was this wavefront 1us ago?"
+    // During the "Update Phase", attribute the *observed* performance of the last epoch
+    // back to the PC stored here. This allows the predictor to "learn" from the past.
+    std::map<Wavefront*, Addr> wavefrontLastPC;
+
+    // 4. Work Tracking
+    // calculate "Sensitivity" = Delta Instructions / Delta Frequency.
+    // This map stores the instruction count from the *previous* check to compute Delta.
+    std::map<ComputeUnit*, double> lastCuInstCount;
+        
+    //5. Polling rate- helps to control polling rate for DVFS
+    Tick nextPollTick; 
+
+    // 6. Work Tracking on Wavefront level
+    // Stores the instruction count of a specific wavefront from the LAST poll.
+    // Key: Wavefront ID (or pointer), Value: Inst Count
+    std::map<Wavefront*, double> lastWfInstCount;
+
+    // 7. Stores the calculate Sensitivity for reporting 
+    std::map<ComputeUnit*, double> currentCuSensitivity; 
+    double currentDomainSensitivity;
+   
+    // 8. adding variables for autotuning of threshold
+    double globalMaxSensitivity = 1.0; // Default to 1.0 (conservative start)
+    const double DECAY_FACTOR = 0.95; // Slowly forget old peaks
+
+    //---------------------------------------------------------------------------------------------
+
+    // --- STANDARD GEM5 MEMBERS ---
+    typedef std::map<DomainID, SrcClockDomain *> Domains;
     Domains domains;
     
     SrcClockDomain *sysClkDomain;
@@ -55,8 +100,7 @@ class GpuDVFSHandler : public SimObject
 
     // Pointer to the real GPU hardware
     Shader *gpuShader;
-
-    // Main event wrapper for the decision loop
+    
     EventFunctionWrapper decisionEvent;
 
     
@@ -64,32 +108,9 @@ class GpuDVFSHandler : public SimObject
     // Core Logic Functions
     // ----------------------------------------------------------------------
 
-    /**
-     * runDecisionLoop()
-     * The "Governor" logic. 
-     * 1. Aggregates global GPU state.
-     * 2. Calculates Wavefront PC Concentration.
-     * 3. Predicts Stall vs. Busy.
-     * 4. Actuates frequency changes.
-     */
     void runDecisionLoop();
-
-    /**
-     * scanGlobalWavefrontState()
-     * Scans ALL Compute Units and ALL Wavefronts.
-     * Returns a Histogram: <PC Address, Count of Wavefronts at this PC>
-     * This provides the "Signature" of the workload at this exact tick.
-     */
-    std::map<Addr, int> scanGlobalWavefrontState(); 
-
     int checkIfGPUIsRunning();
-    int computeUnitSensitivity();
     int dumpImportantStatsToConsole();
-
-    /**
-     * findDomain()
-     * Helper to retrieve a clock domain object given its ID.
-     */
     SrcClockDomain *findDomain(DomainID domain_id) const;
 
     /**
@@ -100,16 +121,15 @@ class GpuDVFSHandler : public SimObject
      */
     struct UpdateEvent : public Event
     {
-        GpuDVFSHandler *handler;       
-        DomainID domainIDToSet;        
-        PerfLevel perfLevelToSet;      
+        GpuDVFSHandler *handler;
+        DomainID domainIDToSet;
+        PerfLevel perfLevelToSet;
 
         UpdateEvent() : Event(Default_Pri, AutoDelete), handler(nullptr) {}
         
         void process() override { updatePerfLevel(); }
         void updatePerfLevel();
-        
-        const char *description() const override { return "GPU DVFS Update Perf Level"; }
+        const char *description() const override { return "GPU DVFS Update"; }
     };
 };
 
