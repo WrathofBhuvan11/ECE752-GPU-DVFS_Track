@@ -319,7 +319,7 @@ void GpuDVFSHandler::runDecisionLoop()
     PerfLevel currentLevel = domain->perfLevel();
     PerfLevel desiredLevel = currentLevel;
     
-    //---------------- Autotuning based decesion making------------------
+    //---------------- Autotuning-based decision making------------------
     // Decay the max slightly to adapt to phase changes (moving from Compute -> Memory phase)
     globalMaxSensitivity *= DECAY_FACTOR; 
     
