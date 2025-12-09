@@ -79,6 +79,8 @@ class GpuDVFSHandler : public SimObject
     // Stores the instruction count of a specific wavefront from the LAST poll.
     // Key: Wavefront ID (or pointer), Value: Inst Count
     std::map<Wavefront*, double> lastWfInstCount;
+    std::map<Wavefront*, double> lastWfSchCycles;
+    std::map<Wavefront*, double> lastWfSchStalls;
 
     // 7. Stores the calculate Sensitivity for reporting 
     std::map<ComputeUnit*, double> currentCuSensitivity; 

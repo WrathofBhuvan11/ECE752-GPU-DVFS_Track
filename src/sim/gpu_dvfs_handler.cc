@@ -46,14 +46,17 @@ void GpuDVFSHandler::startup()
     if (enableHandler) {
         // Initialize PCSTALL Table
         inform("GPU_DVFS: Enabled! Initializing PCSTALL Predictor Table...");
-        // Default to 100.0 (High Sensitivity / Compute Bound) so to start at Max Freq
+        // Default to 1.0 (High Sensitivity / Compute Bound) so to start at Max Freq
         for(int i = 0; i < 128; i++) {
-            sensitivityTable[i] = 100.0;
+            sensitivityTable[i] = 1.0;
         }
         
         // Clear history structures
         wavefrontLastPC.clear();
         lastCuInstCount.clear();
+        lastWfInstCount.clear();
+        lastWfSchCycles.clear();
+        lastWfSchStalls.clear();
 
         // Wait 5ms for OS boot before first poll
         inform("GPU_DVFS: Enabled! Scheduling first check in 5ms.");
@@ -140,7 +143,8 @@ int GpuDVFSHandler::dumpImportantStatsToConsole()
             
             // NOTE: Reporting average predicted sensitivity from table roughly here?
             // Since this function loops over CUs, can't show per-PC sensitivity easily.
-            // Theo, I just updated this based on summation logic asin the paper. 
+            // Theo, I just leave the old "sensitivity[index]" or use 0.0 if that array is gone.
+            // Assuming I removed the old array 'sensitivity', print 0.0 or a placeholder. 
             // So if you wanna edit this let me know #TODO
 
             inform("GPU_DVFS_STATS: CU: %d, clock: %d, Cycles: %d, IPC: %f, IPC_delta: %f, CPI: %f, CPI_delta: %f, Frequency: %d, Voltage: %f, EDP: %f, ED2P: %f, Sensitivity: %f"
@@ -256,11 +260,43 @@ void GpuDVFSHandler::runDecisionLoop()
                 double deltaInsts = currentInsts - prevInsts;
                 if (deltaInsts < 0) deltaInsts = 0; // Handle resets/overflows
                 
-                // 5. Normalisation on Frequency
-                // S = Delta Instructions / Current Frequency (MHz)
-                // This gives "Instructions per MHz" (The Slope) Icurr = Iprev + S.f => S = (Icurr-Iprev)/f (slope)
-                double S_wf_measured = deltaInsts / currentFreqMHz;
-               
+                // 5. Sensitivity using stall modeling with sync cycles
+                // Get the total cycles the wavefront has been scheduled for since it began.
+                double currentSchCycles = wf->stats.schCycles.total();
+                double prevSchCycles = 0.0;
+                if (lastWfSchCycles.find(wf) != lastWfSchCycles.end()) {
+                    prevSchCycles = lastWfSchCycles[wf];
+                }
+                // Find total scheduled cycles in just THIS epoch.
+                double deltaSchCycles = currentSchCycles - prevSchCycles;
+                lastWfSchCycles[wf] = currentSchCycles;
+
+                // Get the total cycles the wavefront has been stalled.
+                double currentSchStalls = wf->stats.schStalls.total();
+                double prevSchStalls = 0.0;
+                if (lastWfSchStalls.find(wf) != lastWfSchStalls.end()) {
+                    prevSchStalls = lastWfSchStalls[wf];
+                }
+                // Find total stall cycles in just THIS epoch.
+                double deltaSchStalls = currentSchStalls - prevSchStalls;
+                lastWfSchStalls[wf] = currentSchStalls;
+
+                // Define Sensitivity (S) as the fraction of time the wavefront was NOT stalled.
+                double S_wf_measured = 0.0;
+                if (deltaSchCycles > 0) {
+                    // Calculate the stall fraction (0.0=no stall, 1.0=always stalled).
+                    double stall_fraction = deltaSchStalls / deltaSchCycles;
+                    // Clamp to [0, 1] for reporting anomalies.
+                    if (stall_fraction > 1.0) stall_fraction = 1.0;
+                    if (stall_fraction < 0.0) stall_fraction = 0.0;
+                    // Sensitivity is the "Compute-Bound" fraction of time (100% - Stall %).
+                    S_wf_measured = 1.0 - stall_fraction;
+                }
+                else{
+                    // If no cycles elapsed, the wavefront was inactive; sensitivity is zero.
+                    S_wf_measured = 0.0;
+                }
+
                 // 6. Update Global Max (Auto-Tuning)
                 if (S_wf_measured > globalMaxSensitivity) {
                     globalMaxSensitivity = S_wf_measured;
@@ -268,6 +304,7 @@ void GpuDVFSHandler::runDecisionLoop()
 
                 // Accumulate measured work for this CU
                 cuMeasuredSens += S_wf_measured;
+                //DPRINTF(GpuDVFS, "WF %p: measured S=%.2f\n", wf, S_wf_measured);
 
                 // 6. Update the History Table
                 // attribute this performance to the PC where the wave STARTED the epoch.
@@ -293,6 +330,7 @@ void GpuDVFSHandler::runDecisionLoop()
 
                     // 3. Aggregate
                     cuPredictedSens += S_wf_predicted;
+                    ++activeWaves;
                 } else {
                     // If wave is stopped, remove it from history map to save memory/confusion
                     wavefrontLastPC.erase(wf);
@@ -319,7 +357,7 @@ void GpuDVFSHandler::runDecisionLoop()
     PerfLevel currentLevel = domain->perfLevel();
     PerfLevel desiredLevel = currentLevel;
     
-    //---------------- Autotuning-based decision making------------------
+    //---------------- Autotuning based decesion making------------------
     // Decay the max slightly to adapt to phase changes (moving from Compute -> Memory phase)
     globalMaxSensitivity *= DECAY_FACTOR; 
     
