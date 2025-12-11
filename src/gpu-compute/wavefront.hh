@@ -61,6 +61,15 @@ namespace gem5
 class Wavefront : public SimObject
 {
   public:
+
+    // for dvfs gpu
+    // Struct to hold stall counters
+    struct DVFSStats {
+        uint64_t numMemoryStalls = 0;
+        uint64_t numComputeStalls = 0;
+    };
+    DVFSStats dvfsStats;
+
     enum status_e
     {
         // wavefront is stalled
@@ -92,14 +101,7 @@ class Wavefront : public SimObject
          */
         S_BARRIER
     };
-
-    // for dvfs gpu
-    // Struct to hold stall counters
-    struct DVFSStats {
-        uint64_t numMemoryStalls = 0;
-        uint64_t numComputeStalls = 0;
-    };
-    DVFSStats dvfsStats;
+    status_e status;
 
     // gfx version wavefront is executing
     GfxVersion gfxVersion;
@@ -366,7 +368,6 @@ class Wavefront : public SimObject
     int expInstsIssued;
     int lgkmInstsIssued;
     int sleepCnt;
-    status_e status;
     Addr _pc;
     VectorMask _execMask;
     int barId;
