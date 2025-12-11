@@ -144,7 +144,7 @@ SrcClockDomain::PerfLevel GpuDVFSHandler::chooseBestLevel(double sensitivity, in
     for (int i = 0; i < numLevels; i++) {
         // 1. Get Freq (MHz) and Voltage
         double fMHz = (1.0 / d->clkPeriodAtPerfLevel(i)) * 1.0e6;
-        double voltage = d->voltageAtPerfLevel(i);
+        double voltage = volts[i];
 
         // 2. Predict Performance (Linear Scaling Model)
         // If S=1 (Compute), Perf scales with Freq. If S=0 (Mem), it stays flat.
@@ -184,9 +184,10 @@ void GpuDVFSHandler::runDecisionLoop() {
         int activeWaves = 0;
         double clockPeriod = cu->clockPeriod();
 
-        for (auto *w : cu->wavefronts) { 
+        // wfList- vector of vectors: wfList[simdId][waveId]
+        for (const auto &simd_waves : cu->wfList) {            
+        for (auto *w : simd_waves) {
             if (w->status == Wavefront::S_STOPPED) continue;
-
             //--------------------------------------------------------------
             // 1: MEASURE & VRF (Hardware Snooping)
             //--------------------------------------------------------------
@@ -233,8 +234,8 @@ void GpuDVFSHandler::runDecisionLoop() {
             // This ensures stability even if one epoch is weird.
             cuPredictedSensitivity += sensitivityTable[idx];
             activeWaves++;
-        }
-        
+        } 
+        } 
         //--------------------------------------------------------------
         // 5: MAKE DECESION & NORMALIZATION
         //--------------------------------------------------------------
