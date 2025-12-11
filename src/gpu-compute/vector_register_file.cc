@@ -50,6 +50,9 @@ VectorRegisterFile::VectorRegisterFile(const VectorRegisterFileParams &p)
     : RegisterFile(p)
 {
     regFile.resize(numRegs());
+    
+    //Initialize the shadow tags
+    regProducerType.resize(numRegs(), PRODUCER_NONE);
 
     for (auto &reg : regFile) {
         reg.zero();
@@ -62,8 +65,28 @@ VectorRegisterFile::operandsReady(Wavefront *w, GPUDynInstPtr ii) const
     bool src_ready = true, dst_ready=true;
     for (const auto& srcVecOp : ii->srcVecRegOperands()) {
         for (const auto& physIdx : srcVecOp.physIndices()) {
+
             if (regBusy(physIdx) &&
-                    !computeUnit->rfc[simdId]->inRFC(physIdx)) {
+                    !computeUnit->rfc[simdId]->inRFC(physIdx)) { 
+                //---------------------------------------------------------------
+                //count on compute-memory stalls for dvfs
+                //---------------------------------------------------------------
+                if (regBusy(physIdx)) {
+                        // The instruction is stalling on register 'physIdx'.
+                        // who produced it.
+                        if (regProducerType[physIdx] == PRODUCER_MEMORY) {
+                            // stalling because a Load hasn't returned yet.
+                            // This is a MEMORY STALL.
+                            w->dvfsStats.numMemoryStalls++; 
+                        } else if (regProducerType[physIdx] == PRODUCER_COMPUTE) {
+                            // stalling because an ALU op is still pipelining.
+                            // This is a COMPUTE STALL.
+                            w->dvfsStats.numComputeStalls++;
+                        }
+                        return false; 
+                    }
+                //---------------------------------------------------------------
+
                 DPRINTF(GPUVRF, "RAW stall: WV[%d]: %s: physReg[%d]\n",
                         w->wfDynId, ii->disassemble(), physIdx);
                 w->stats.numTimesBlockedDueRAWDependencies++;
@@ -100,6 +123,8 @@ VectorRegisterFile::scheduleWriteOperands(Wavefront *w, GPUDynInstPtr ii)
 {
     for (const auto& dstVecOp : ii->dstVecRegOperands()) {
         for (const auto& physIdx : dstVecOp.physIndices()) {
+
+
             // If the instruction is atomic instruciton and the atomics do
             // not return value, then do not mark this reg as busy.
             if (!(ii->isAtomic() && !ii->isAtomicRet())) {
@@ -112,6 +137,11 @@ VectorRegisterFile::scheduleWriteOperands(Wavefront *w, GPUDynInstPtr ii)
                  * dst reg(s)
                  */
                 if (ii->exec_mask.any()) {
+                    //---------------------------------------------------------------
+                    // Sneak for dvfs: Tag this register as Compute-produced
+                    //---------------------------------------------------------------
+                    setProducerType(physIdx, false); // false = not a load
+                    //---------------------------------------------------------------
                     markReg(physIdx, true);
                 }
             }
@@ -187,6 +217,14 @@ VectorRegisterFile::scheduleWriteOperandsFromLoad(
     assert(ii->isLoad() || ii->isAtomicRet());
     for (const auto& dstVecOp : ii->dstVecRegOperands()) {
         for (const auto& physIdx : dstVecOp.physIndices()) {
+
+            //---------------------------------------------------------------
+            // Sneak for dvfs: Tag this register as Memory-produced
+            //---------------------------------------------------------------
+            setProducerType(physIdx, true); // true = is load
+            //---------------------------------------------------------------
+
+            // Standard gem5: Schedule the future "un-busy" event
             enqRegFreeEvent(physIdx, computeUnit->clockPeriod());
         }
     }

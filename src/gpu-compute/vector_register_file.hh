@@ -65,6 +65,19 @@ class VectorRegisterFile : public RegisterFile
     {
         RegisterFile::setParent(_computeUnit);
     }
+    
+    // ---------------------------------------------------------------------
+    // dvfs changes 
+    // ---------------------------------------------------------------------
+    // Enum to differentiate what is producing the value
+    enum ProducerType {
+        PRODUCER_NONE,
+        PRODUCER_COMPUTE, // ALU/FPU operations
+        PRODUCER_MEMORY   // Load operations
+    };
+    // Shadow vector to track the producer of each physical register.
+    std::vector<ProducerType> regProducerType;
+    // ---------------------------------------------------------------------
 
     // Read a register that is writeable (e.g., a DST operand)
     VecRegContainer&
@@ -72,6 +85,20 @@ class VectorRegisterFile : public RegisterFile
     {
         return regFile[regIdx];
     }
+
+    // ---------------------------------------------------------------------
+    // for dvfs changes 
+    // ---------------------------------------------------------------------
+    // Helper to safely set the producer type.
+    // 'physIdx' is the physical register index.
+    // 'isLoad' is true for memory instructions, false for compute.
+    void setProducerType(int physIdx, bool isLoad) {
+        // Safety check to prevent segfaults
+        if (physIdx < regProducerType.size()) {
+            regProducerType[physIdx] = isLoad ? PRODUCER_MEMORY : PRODUCER_COMPUTE;
+        }
+    }
+    // ---------------------------------------------------------------------
 
     // Read a register that is not writeable (e.g., src operand)
     const VecRegContainer&

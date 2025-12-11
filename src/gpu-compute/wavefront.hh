@@ -93,6 +93,14 @@ class Wavefront : public SimObject
         S_BARRIER
     };
 
+    // for dvfs gpu
+    // Struct to hold stall counters
+    struct DVFSStats {
+        uint64_t numMemoryStalls = 0;
+        uint64_t numComputeStalls = 0;
+    };
+    DVFSStats dvfsStats;
+
     // gfx version wavefront is executing
     GfxVersion gfxVersion;
     // HW slot id where the WF is mapped to inside a SIMD unit
