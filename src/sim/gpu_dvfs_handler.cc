@@ -170,9 +170,8 @@ SrcClockDomain::PerfLevel GpuDVFSHandler::chooseBestLevel(double sensitivity, in
 // MAIN LOOP
 // --------------------------------------------------------------------------
 void GpuDVFSHandler::runDecisionLoop() {
-    // [Check Running]
     if (!checkIfGPUIsRunning()) {
-        schedule(decisionEvent, curTick() + pollingInterval);
+        schedule(decisionEvent, curTick() + pollingInterval*1000);
         return;
     }
 
