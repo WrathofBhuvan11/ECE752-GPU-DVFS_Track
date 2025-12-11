@@ -216,28 +216,40 @@ void GpuDVFSHandler::runDecisionLoop() {
             // S=1.0 (Compute Bound), S=0.0 (Memory Bound).
             double measuredS = computeSensitivity(w, deltaCycles, deltaMemStalls);
 
-            //--------------------------------------------------------------
-            // 3: TRAIN (Update PCSTALL Table)
-            //--------------------------------------------------------------
-            // Map the instruction PC to the sensitivity just measured.
-            // This "teaches" the predictor how this code block behaves.
-            Addr pc = w->pc();
-            int idx = getIndex(pc);
-
-            //EMA Based- Exponential moving average- (1-p)* previous value + p* present value
-            sensitivityTable[idx] = (0.6 * measuredS) + (0.4 * sensitivityTable[idx]);
-
-            //--------------------------------------------------------------
-            // 4: PREDICT (Accumulate)
-            //--------------------------------------------------------------
-            // Use the *Learned Table Value* for the decision, not the raw noise.
-            // This ensures stability even if one epoch is weird.
-            cuPredictedSensitivity += sensitivityTable[idx];
+            // --------------------------------------------------------------
+            // 3: TRAIN (Update PCSTALL Table using PREVIOUS PC)
+            // --------------------------------------------------------------
+            // Associate the sensitivity just measured (measuredS)
+            // with the code block that JUST FINISHED executing (previousPC).
+            Addr currentPC = w->pc(); 
+            
+            // Check if this wavefront has a history for this wavefront (is it in the last epoch)
+            if (wavefrontLastPC.find(w) != wavefrontLastPC.end()) {
+                Addr previousPC = wavefrontLastPC[w];
+                int prevIdx = getIndex(previousPC);
+                // Update the table for the OLD PC, because that's what generated the measuredS
+                //EMA Based- Exponential moving average- (1-p)* previous value + p* present value
+                sensitivityTable[prevIdx] = (0.6 * measuredS) + (0.4 * sensitivityTable[prevIdx]);
+            }
+            
+            // --------------------------------------------------------------
+            // 4: PREDICT (Lookup Table using CURRENT PC)
+            // --------------------------------------------------------------
+            // look where the PC is pointing NOW to predict the FUTURE.
+            int nextIdx = getIndex(currentPC);
+            // Use the stored history for this new code block to predict behavior
+            cuPredictedSensitivity += sensitivityTable[nextIdx];
+            
+            // --------------------------------------------------------------
+            // 5: STORE PC FOR NEXT EPOCH
+            // --------------------------------------------------------------
+            // Save the current PC so next time it know what generated the future stalls
+            wavefrontLastPC[w] = currentPC;
             activeWaves++;
         } 
         } 
         //--------------------------------------------------------------
-        // 5: MAKE DECESION & NORMALIZATION
+        // 6: MAKE DECESION & NORMALIZATION
         //--------------------------------------------------------------
         if (activeWaves > 0) {
             // Optimization: Find freq that minimizes EDP based on prediction
